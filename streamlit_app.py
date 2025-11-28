@@ -237,27 +237,6 @@ def delete_worksheet_row(worksheet_name, search_column, search_value):
     """Exclui dados na sessão - função simplificada"""
     return True  # Para não quebrar o código
 
-# Função de logs simplificada
-def registrar_log_seguranca(usuario_id, acao, descricao, ip="N/A", user_agent="N/A"):
-    """Registra logs na sessão"""
-    try:
-        log_data = {
-            'id': len(st.session_state.database['logs_seguranca']) + 1,
-            'usuario_id': usuario_id,
-            'acao': acao,
-            'descricao': descricao,
-            'ip': ip,
-            'user_agent': user_agent,
-            'created_at': datetime.now().strftime('%d-%m-%Y %H:%M:%S')
-        }
-        st.session_state.database['logs_seguranca'].append(log_data)
-        return True
-    except:
-        return False
-
-
-
-
 # FUNÇÃO DE LOGS DE SEGURANÇA ATUALIZADA
 def registrar_log_seguranca(usuario_id, acao, descricao, ip="N/A", user_agent="N/A"):
     """Registra logs de segurança no Google Sheets"""
@@ -1410,4 +1389,5 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
