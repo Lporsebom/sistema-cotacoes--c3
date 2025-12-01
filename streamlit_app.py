@@ -589,8 +589,7 @@ corrigir_senha_usuario_padrao()
 # FUNÇÕES DE AUTENTICAÇÃO SEGURA
 # =============================================
 def verificar_login(usuario_input, senha):
-    """Verifica login com banco de dados"""
-  
+    """Verifica login com banco de dados - VERSÃO CORRIGIDA"""
     if not usuario_input or not senha:
         return None
         
@@ -616,38 +615,34 @@ def verificar_login(usuario_input, senha):
         else:
             st.session_state.login_attempts = 0
     
-    session = None  # Definir antes para evitar erro no finally
+    # CRIAR UMA NOVA SESSÃO FRESCA
+    from sqlalchemy.orm import Session
+    session = None
+    
     try:
-        session = get_session()
+        # Criar sessão independente
+        session = Session(bind=engine)
         senha_hash = hash_senha(senha)
         
-        # DEBUG: Mostrar o hash sendo gerado
-        print(f"DEBUG - Usuário digitado: {usuario_input}")
-        print(f"DEBUG - Senha digitada: {senha}")
-        print(f"DEBUG - Hash gerado: {senha_hash}")
+        # DEBUG
+        print(f"🔍 Login tentativa: {usuario_input}")
+        print(f"🔍 Hash gerado: {senha_hash}")
         
-        # Buscar usuário por CNPJ ou razão social
+        # Buscar usuário
         usuario = session.query(Usuario).filter(
             (Usuario.cnpj == usuario_input) | (Usuario.razao_social == usuario_input)
         ).first()
         
         if usuario:
-            print(f"DEBUG - Usuário encontrado: {usuario.razao_social}")
-            print(f"DEBUG - Hash no banco: {usuario.senha_hash}")
-            print(f"DEBUG - Status: {usuario.status}")
+            print(f"🔍 Usuário encontrado: {usuario.razao_social}")
+            print(f"🔍 Hash no banco: {usuario.senha_hash}")
+            print(f"🔍 Hash iguais? {usuario.senha_hash == senha_hash}")
         
         if usuario and usuario.senha_hash == senha_hash and usuario.status == 'Ativa':
             st.session_state.login_attempts = 0
-            adicionar_log_seguranca({
-                'usuario_id': usuario.id,
-                'acao': 'LOGIN_SUCESSO',
-                'descricao': f'Usuário: {usuario.razao_social}',
-                'ip': 'N/A',
-                'user_agent': 'N/A',
-                'created_at': datetime.now()
-            })
             
-            return {
+            # Criar cópia dos dados para retornar
+            usuario_info = {
                 'id': usuario.id,
                 'razao_social': usuario.razao_social,
                 'cnpj': usuario.cnpj,
@@ -659,6 +654,18 @@ def verificar_login(usuario_input, senha):
                 'status': usuario.status,
                 'data_cadastro': usuario.data_cadastro.strftime('%d-%m-%Y %H:%M:%S') if usuario.data_cadastro else None
             }
+            
+            adicionar_log_seguranca({
+                'usuario_id': usuario.id,
+                'acao': 'LOGIN_SUCESSO',
+                'descricao': f'Usuário: {usuario.razao_social}',
+                'ip': 'N/A',
+                'user_agent': 'N/A',
+                'created_at': datetime.now()
+            })
+            
+            return usuario_info
+            
         else:
             st.session_state.login_attempts += 1
             st.session_state.last_attempt = time.time()
@@ -674,6 +681,9 @@ def verificar_login(usuario_input, senha):
             
     except Exception as e:
         st.error(f"Erro no sistema de login: {str(e)}")
+        import traceback
+        print(f"❌ ERRO COMPLETO: {traceback.format_exc()}")
+        
         adicionar_log_seguranca({
             'usuario_id': 'SISTEMA',
             'acao': 'ERRO_LOGIN',
@@ -683,7 +693,9 @@ def verificar_login(usuario_input, senha):
             'created_at': datetime.now()
         })
         return None
+        
     finally:
+        # FECHAR a sessão
         if session:
             session.close()
 
@@ -861,6 +873,33 @@ st.markdown("""
 # =============================================
 # SISTEMA DE LOGIN
 # =============================================
+
+# DEBUG: Verificar se usuário existe
+def debug_verificar_usuario():
+    """Função de debug para ver usuário no banco"""
+    try:
+        import sqlite3
+        conn = sqlite3.connect('c3_engenharia.db')
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM usuarios WHERE cnpj = '12.345.678/0001-90'")
+        usuario = cursor.fetchone()
+        
+        if usuario:
+            print(f"✅ Usuário encontrado no banco:")
+            print(f"   ID: {usuario[0]}")
+            print(f"   CNPJ: {usuario[2]}")
+            print(f"   Hash: {usuario[6][:20]}...")  # Primeiros 20 chars do hash
+        else:
+            print("❌ Usuário NÃO encontrado no banco!")
+        
+        conn.close()
+    except Exception as e:
+        print(f"❌ Erro no debug: {e}")
+
+# Executar debug
+debug_verificar_usuario()
+
 
 def mostrar_login():
     st.markdown('<div class="main-header">SISTEMA DE COTAÇÕES - C3 ENGENHARIA</div>', unsafe_allow_html=True)
@@ -1919,6 +1958,7 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
