@@ -3,3 +3,5 @@ Pygments==2.19.2
 mdurl==0.1.2
 markdown-it-py==4.0.0
 rich==14.2.0
+pandas
+sqlalchemy
