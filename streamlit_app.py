@@ -12,75 +12,24 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, scoped_session
 import json
 import os
+import sqlite3  # Adicione esta linha
+
+# =============================================
+# TESTE INICIAL DO SISTEMA
+# =============================================
+print("\n" + "="*60)
+print("🚀 INICIANDO SISTEMA C3 ENGENHARIA")
+print("="*60)
+
+# Testar hash da senha
+SENHA_TESTE = "462462Ca_"
+HASH_TESTE = hashlib.sha256(SENHA_TESTE.encode()).hexdigest()
+print(f"\n🔐 TESTE DE HASH:")
+print(f"   Senha: {SENHA_TESTE}")
+print(f"   Hash: {HASH_TESTE}")
+print("="*60 + "\n")
 
 # Adicione esta função APÓS as importações e ANTES da configuração do banco
-
-def corrigir_senha_usuario():
-    """Corrige a senha do usuário C3 Engenharia NOVAMENTE"""
-    print("\n" + "="*60)
-    print("🔧 CORRIGINDO SENHA DO USUÁRIO")
-    print("="*60)
-    
-    try:
-        conn = sqlite3.connect('c3_engenharia.db')
-        cursor = conn.cursor()
-        
-        # Senha CORRETA
-        SENHA_CORRETA = "462462Ca_"
-        NOVO_HASH = hashlib.sha256(SENHA_CORRETA.encode()).hexdigest()
-        
-        print(f"📝 Senha definida: {SENHA_CORRETA}")
-        print(f"🔐 Novo hash: {NOVO_HASH}")
-        
-        # Verificar se usuário existe
-        cursor.execute("SELECT razao_social, senha_hash FROM usuarios WHERE cnpj = '12.345.678/0001-90'")
-        usuario = cursor.fetchone()
-        
-        if usuario:
-            print(f"✅ Usuário encontrado: {usuario[0]}")
-            print(f"🔍 Hash atual no banco: {usuario[1]}")
-            
-            # Atualizar senha
-            cursor.execute("""
-                UPDATE usuarios 
-                SET senha_hash = ?
-                WHERE cnpj = '12.345.678/0001-90'
-            """, (NOVO_HASH,))
-            
-            conn.commit()
-            print("🔄 Senha ATUALIZADA no banco!")
-        else:
-            print("❌ Usuário não encontrado. Criando...")
-            cursor.execute("""
-                INSERT INTO usuarios 
-                (id, razao_social, cnpj, email, telefone, cidade, senha_hash, tipo, status, data_cadastro)
-                VALUES 
-                ('SOL-001', 'C3 Engenharia', '12.345.678/0001-90', 
-                 'caroline.frasseto@c3engenharia.com.br', '(19) 98931-4967', 
-                 'Santa Bárbara D''Oeste - SP', ?, 'solicitante', 'Ativa', 
-                 datetime('now'))
-            """, (NOVO_HASH,))
-            
-            conn.commit()
-            print("✅ Usuário CRIADO com nova senha!")
-        
-        # Verificar novamente
-        cursor.execute("SELECT senha_hash FROM usuarios WHERE cnpj = '12.345.678/0001-90'")
-        hash_final = cursor.fetchone()
-        
-        print(f"✅ Hash final no banco: {hash_final[0]}")
-        print(f"✅ Hash esperado: {NOVO_HASH}")
-        print(f"✅ São iguais? {hash_final[0] == NOVO_HASH}")
-        
-        conn.close()
-        
-    except Exception as e:
-        print(f"❌ Erro: {e}")
-    
-    print("="*60)
-
-# Execute esta função UMA VEZ
-corrigir_senha_usuario()
 
 # =============================================
 # CONFIGURAÇÃO DO BANCO DE DADOS SQLite
@@ -671,49 +620,63 @@ def tempo_desde(data_str):
 # =============================================
 
 def verificar_login(usuario_input, senha):
-    """Verifica login - VERSÃO SUPER SIMPLES"""
+    """Verifica login - VERSÃO COM DEBUG COMPLETO"""
     if not usuario_input or not senha:
         st.error("Preencha todos os campos")
         return None
     
-    print(f"\n" + "="*40)
-    print(f"🔍 TENTATIVA DE LOGIN")
-    print(f"Usuário digitado: {usuario_input}")
-    print(f"Senha digitada: {senha}")
+    print(f"\n" + "="*60)
+    print(f"🔍 INÍCIO DA VERIFICAÇÃO DE LOGIN")
+    print("="*60)
+    print(f"Usuário digitado: '{usuario_input}'")
+    print(f"Senha digitada: '{senha}'")
     
     try:
-        # Conectar ao banco
+        # 1. Calcular hash da senha digitada
+        senha_hash_digitada = hashlib.sha256(senha.encode()).hexdigest()
+        print(f"\n🔐 HASH DA SENHA DIGITADA:")
+        print(f"   Senha: {senha}")
+        print(f"   Hash: {senha_hash_digitada}")
+        
+        # 2. Conectar ao banco
         conn = sqlite3.connect('c3_engenharia.db')
         cursor = conn.cursor()
         
-        # BUSCAR USUÁRIO
+        # 3. Verificar TODOS os usuários no banco primeiro
+        cursor.execute("SELECT razao_social, cnpj, senha_hash FROM usuarios")
+        todos_usuarios = cursor.fetchall()
+        print(f"\n📋 TODOS OS USUÁRIOS NO BANCO ({len(todos_usuarios)}):")
+        for user in todos_usuarios:
+            print(f"   - '{user[0]}' | CNPJ: {user[1]} | Hash: {user[2][:20]}...")
+        
+        # 4. Buscar usuário específico
         usuario = None
         
-        # Tentar por "C3 Engenharia" (razão social)
-        cursor.execute("SELECT * FROM usuarios WHERE LOWER(razao_social) = LOWER(?)", (usuario_input,))
+        # Tentar por "C3 Engenharia" exato
+        cursor.execute("SELECT * FROM usuarios WHERE razao_social = ?", ("C3 Engenharia",))
         usuario = cursor.fetchone()
         
-        # Se não encontrou, tentar por CNPJ
-        if not usuario:
-            cursor.execute("SELECT * FROM usuarios WHERE cnpj = ?", (usuario_input,))
+        if usuario:
+            print(f"\n✅ USUÁRIO 'C3 Engenharia' ENCONTRADO!")
+        else:
+            print(f"\n❌ USUÁRIO 'C3 Engenharia' NÃO ENCONTRADO!")
+            # Tentar case insensitive
+            cursor.execute("SELECT * FROM usuarios WHERE LOWER(razao_social) = LOWER(?)", ("C3 Engenharia",))
             usuario = cursor.fetchone()
+            if usuario:
+                print(f"✅ Encontrado com busca case-insensitive")
         
         if usuario:
-            print(f"✅ USUÁRIO ENCONTRADO:")
+            print(f"\n📊 DETALHES DO USUÁRIO:")
             print(f"   ID: {usuario[0]}")
-            print(f"   Razão Social: {usuario[1]}")
+            print(f"   Razão Social: '{usuario[1]}'")
             print(f"   CNPJ: {usuario[2]}")
             print(f"   Hash no banco: {usuario[6]}")
+            print(f"   Hash digitado: {senha_hash_digitada}")
+            print(f"   São iguais? {usuario[6] == senha_hash_digitada}")
             
-            # Calcular hash da senha digitada
-            senha_hash_digitada = hashlib.sha256(senha.encode()).hexdigest()
-            print(f"🔐 Hash da senha digitada: {senha_hash_digitada}")
-            print(f"🔐 Hash no banco: {usuario[6]}")
-            print(f"✅ São iguais? {senha_hash_digitada == usuario[6]}")
-            
-            # VERIFICAR SENHA
-            if senha_hash_digitada == usuario[6]:
-                print("🎉 LOGIN BEM-SUCEDIDO!")
+            if usuario[6] == senha_hash_digitada:
+                print("\n🎉 LOGIN BEM-SUCEDIDO!")
                 conn.close()
                 
                 return {
@@ -729,19 +692,20 @@ def verificar_login(usuario_input, senha):
                     'data_cadastro': usuario[9]
                 }
             else:
-                print("❌ SENHA INCORRETA")
-                print(f"   Hash esperado: {usuario[6]}")
-                print(f"   Hash recebido: {senha_hash_digitada}")
+                print("\n❌ ERRO: HASHES NÃO BATEM!")
+                print(f"   No banco ({len(usuario[6])} chars): {usuario[6]}")
+                print(f"   Digitado ({len(senha_hash_digitada)} chars): {senha_hash_digitada}")
         else:
-            print("❌ USUÁRIO NÃO ENCONTRADO")
+            print("\n❌ ERRO: Nenhum usuário encontrado com esse nome!")
         
         conn.close()
         
     except Exception as e:
-        print(f"❌ ERRO: {e}")
+        print(f"\n❌ ERRO NA CONEXÃO: {e}")
         import traceback
         traceback.print_exc()
     
+    print("="*60)
     return None
 
 def cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, tipo='transportadora'):
@@ -1171,6 +1135,9 @@ if st.sidebar.button("🚨 Reset de Emergência (Login)", type="primary", use_co
             st.sidebar.error(f"❌ Erro no reset: {e}")
 
 st.sidebar.markdown("---")
+
+mostrar_login()
+    st.stop()  # <-- ADICIONE ESTA LINHA PARA PARAR AQUI
 
 # =============================================
 # SISTEMA PRINCIPAL (APÓS LOGIN)
@@ -2052,4 +2019,5 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
