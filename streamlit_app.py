@@ -508,50 +508,100 @@ def tempo_desde(data_str):
 # =============================================
 
 def inicializar_usuario_padrao():
-    """Cria/Atualiza o usuário padrão da C3 Engenharia com senha correta"""
-    session = get_session()
+    """Cria/Atualiza o usuário padrão da C3 Engenharia com senha correta - VERSÃO FINAL"""
     try:
-        # Verificar se o usuário padrão já existe
-        usuario = session.query(Usuario).filter_by(cnpj='C3 Engenharia').first()
+        # Criar uma sessão FRESCA e independente
+        from sqlalchemy.orm import sessionmaker
+        SessionLocal = sessionmaker(bind=engine)
+        session = SessionLocal()
         
-        if usuario:
-            # ATUALIZAR senha do usuário existente
-            usuario.senha_hash = hashlib.sha256("462462Ca_".encode()).hexdigest()
+        # Definir senha DEFINITIVA
+        SENHA_DEFINITIVA = "462462Ca_"
+        SENHA_HASH = hashlib.sha256(SENHA_DEFINITIVA.encode()).hexdigest()
+        
+        print("=" * 60)
+        print("🔧 INICIALIZANDO USUÁRIO PADRÃO")
+        print(f"📝 Senha: {SENHA_DEFINITIVA}")
+        print(f"🔐 Hash: {SENHA_HASH}")
+        print("=" * 60)
+        
+        # Verificar se já existe algum usuário
+        usuarios_existentes = session.query(Usuario).all()
+        print(f"📊 Total de usuários no banco: {len(usuarios_existentes)}")
+        
+        # Procurar por CNPJ ou Razão Social
+        usuario_existente = session.query(Usuario).filter(
+            (Usuario.cnpj == '12.345.678/0001-90') | 
+            (Usuario.razao_social == 'C3 Engenharia')
+        ).first()
+        
+        if usuario_existente:
+            print(f"✅ Usuário encontrado: {usuario_existente.razao_social}")
+            print(f"🔍 Hash atual no banco: {usuario_existente.senha_hash}")
+            
+            # Atualizar senha
+            usuario_existente.senha_hash = SENHA_HASH
             session.commit()
-            print("✅ Usuário padrão ATUALIZADO com nova senha!")
+            print("🔄 Senha ATUALIZADA no banco!")
         else:
+            print("❌ Usuário não encontrado. Criando novo...")
             # Criar novo usuário
-            usuario = Usuario(
+            novo_usuario = Usuario(
                 id='SOL-001',
                 razao_social='C3 Engenharia',
                 cnpj='12.345.678/0001-90',
                 email='caroline.frasseto@c3engenharia.com.br',
                 telefone='(19) 98931-4967',
                 cidade="Santa Bárbara D'Oeste - SP",
-                senha_hash=hashlib.sha256("175or1345on_".encode()).hexdigest(),  # SENHA CORRETA
+                senha_hash=SENHA_HASH,
                 tipo='solicitante',
                 status='Ativa',
                 data_cadastro=datetime.now()
             )
-            session.add(usuario)
+            session.add(novo_usuario)
             session.commit()
-            print("✅ Usuário padrão CRIADO com senha correta!")
+            print("✅ Usuário CRIADO com sucesso!")
         
-        # DEBUG: Mostrar hash
-        print(f"🔍 Hash da senha '462462Ca_': {hashlib.sha256('462462Ca_'.encode()).hexdigest()}")
+        # Verificar se ficou correto
+        usuario_verificado = session.query(Usuario).filter_by(cnpj='12.345.678/0001-90').first()
+        if usuario_verificado:
+            print("✅ VERIFICAÇÃO FINAL:")
+            print(f"   Razão Social: {usuario_verificado.razao_social}")
+            print(f"   CNPJ: {usuario_verificado.cnpj}")
+            print(f"   Hash no banco: {usuario_verificado.senha_hash}")
+            print(f"   Hash esperado: {SENHA_HASH}")
+            print(f"   ✅ Hashes iguais: {usuario_verificado.senha_hash == SENHA_HASH}")
+        
+        session.close()
+        print("=" * 60)
         
     except Exception as e:
-        print(f"❌ Erro ao criar/atualizar usuário padrão: {e}")
-        session.rollback()
-    finally:
-        session.close()
-
-# Executar inicialização
-inicializar_usuario_padrao()
-
-# =============================================
-# FUNÇÕES DE AUTENTICAÇÃO SEGURA
-# =============================================
+        print(f"❌ ERRO CRÍTICO na inicialização: {e}")
+        import traceback
+        print(traceback.format_exc())
+        
+        # Tentativa alternativa com SQL direto
+        try:
+            import sqlite3
+            conn = sqlite3.connect('c3_engenharia.db')
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO usuarios 
+                (id, razao_social, cnpj, email, telefone, cidade, senha_hash, tipo, status, data_cadastro)
+                VALUES 
+                ('SOL-001', 'C3 Engenharia', '12.345.678/0001-90', 
+                 'caroline.frasseto@c3engenharia.com.br', '(19) 98931-4967', 
+                 'Santa Bárbara D''Oeste - SP', ?, 'solicitante', 'Ativa', 
+                 datetime('now'))
+            """, (hashlib.sha256("462462Ca_".encode()).hexdigest(),))
+            
+            conn.commit()
+            conn.close()
+            print("✅ Usuário criado via SQL direto!")
+        except Exception as e2:
+            print(f"❌ Erro também no SQL direto: {e2}")
+            
 
 def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
@@ -559,35 +609,7 @@ def hash_senha(senha):
 # =============================================
 # FUNÇÃO PARA CORRIGIR SENHA DO USUÁRIO PADRÃO
 # =============================================
-def corrigir_senha_usuario_padrao():
-    """CORRIGE a senha do usuário padrão - execute UMA VEZ"""
-    session = get_session()
-    try:
-        usuario = session.query(Usuario).filter_by(cnpj='12.345.678/0001-90').first()
-        if usuario:
-            # Atualizar com a senha CORRETA
-            nova_senha = "175or1345on_"
-            usuario.senha_hash = hashlib.sha256(nova_senha.encode()).hexdigest()
-            session.commit()
-            print(f"✅ Senha corrigida para: {nova_senha}")
-            print(f"✅ Hash atualizado no banco!")
-            return True
-        else:
-            print("❌ Usuário não encontrado!")
-            return False
-    except Exception as e:
-        print(f"❌ Erro: {e}")
-        session.rollback()
-        return False
-    finally:
-        session.close()
 
-# Executar a correção automaticamente
-corrigir_senha_usuario_padrao()
-
-# =============================================
-# FUNÇÕES DE AUTENTICAÇÃO SEGURA
-# =============================================
 def verificar_login(usuario_input, senha):
     """Verifica login com banco de dados - VERSÃO CORRIGIDA"""
     if not usuario_input or not senha:
@@ -997,6 +1019,20 @@ if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
+    # Adicionar botão de reset no sidebar
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### 🛠️ Ferramentas de Desenvolvimento")
+        if st.button("🔄 RESET COMPLETO DO SISTEMA", type="secondary", use_container_width=True):
+            if reset_completo_sistema():
+                st.success("Sistema resetado com sucesso!")
+                st.info("Faça login com:")
+                st.info("**Usuário:** C3 Engenharia")
+                st.info("**Senha:** 462462Ca_")
+                st.rerun()
+            else:
+                st.error("Erro ao resetar sistema")
+    
     mostrar_login()
     st.stop()
 
@@ -1887,61 +1923,107 @@ elif menu == "Meu Perfil":
                     st.error("Preencha todos os campos")
 
 # =============================================
-# CORREÇÃO DE EMERGÊNCIA - EXECUTAR UMA VEZ
+# RESET COMPLETO DO SISTEMA
 # =============================================
-def correcao_emergencial_senha():
-    """Correção emergencial direta no banco SQLite"""
+def reset_completo_sistema():
+    """Reseta completamente o sistema - USE APENAS EM DESENVOLVIMENTO"""
     try:
         import sqlite3
-        import hashlib
+        import os
         
+        print("=" * 60)
+        print("🔄 RESET COMPLETO DO SISTEMA")
+        print("=" * 60)
+        
+        # Fechar todas as conexões
+        if os.path.exists('c3_engenharia.db'):
+            print("🗑️ Removendo banco de dados antigo...")
+            os.remove('c3_engenharia.db')
+            print("✅ Banco removido!")
+        
+        # Recriar banco
+        print("🔨 Recriando banco de dados...")
+        Base.metadata.create_all(engine)
+        
+        # Criar usuário padrão CORRETO
         conn = sqlite3.connect('c3_engenharia.db')
         cursor = conn.cursor()
         
-        senha = "175or1345on_"
+        senha = "462462Ca_"
         senha_hash = hashlib.sha256(senha.encode()).hexdigest()
         
-        # Verificar tabela
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'")
-        if not cursor.fetchone():
-            print("❌ Tabela 'usuarios' não existe!")
-            return
-        
-        # Verificar se usuário existe
-        cursor.execute("SELECT id FROM usuarios WHERE cnpj = 'C3 Engenharia'")
-        usuario = cursor.fetchone()
-        
-        if usuario:
-            # Atualizar
-            cursor.execute("UPDATE usuarios SET senha_hash = ? WHERE cnpj = 'C3 Engenharia'", 
-                          (senha_hash,))
-            print(f"✅ Senha ATUALIZADA para: {senha}")
-        else:
-            # Criar
-            cursor.execute("""
-                INSERT INTO usuarios 
-                (id, razao_social, cnpj, email, telefone, cidade, senha_hash, tipo, status, data_cadastro)
-                VALUES 
-                ('SOL-001', 'C3 Engenharia', '12.345.678/0001-90', 
-                 'caroline.frasseto@c3engenharia.com.br', '(19) 98931-4967', 
-                 "Santa Bárbara D'Oeste - SP", ?, 'solicitante', 'Ativa', 
-                 datetime('now'))
-            """, (senha_hash,))
-            print(f"✅ Usuário CRIADO com senha: {senha}")
+        cursor.execute("""
+            INSERT INTO usuarios 
+            (id, razao_social, cnpj, email, telefone, cidade, senha_hash, tipo, status, data_cadastro)
+            VALUES 
+            ('SOL-001', 'C3 Engenharia', '12.345.678/0001-90', 
+             'caroline.frasseto@c3engenharia.com.br', '(19) 98931-4967', 
+             'Santa Bárbara D''Oeste - SP', ?, 'solicitante', 'Ativa', 
+             datetime('now'))
+        """, (senha_hash,))
         
         conn.commit()
+        
+        # Verificar
+        cursor.execute("SELECT razao_social, senha_hash FROM usuarios")
+        resultado = cursor.fetchone()
+        
+        print("✅ RESET COMPLETO!")
+        print(f"👤 Usuário: {resultado[0]}")
+        print(f"🔐 Senha: {senha}")
+        print(f"🔑 Hash: {resultado[1]}")
+        print("=" * 60)
+        
         conn.close()
-        print("✅ Banco de dados corrigido com sucesso!")
+        
+        # Resetar sessão do Streamlit
+        if 'login_attempts' in st.session_state:
+            st.session_state.login_attempts = 0
+            st.session_state.last_attempt = 0
+        
+        return True
         
     except Exception as e:
-        print(f"❌ Erro na correção: {e}")
+        print(f"❌ Erro no reset: {e}")
+        return False
 
-# Executar correção emergencial APENAS UMA VEZ
-correcao_emergencial_senha()
+# Executar reset UMA VEZ (comente depois)
+print("🚀 Executando reset do sistema...")
+reset_completo_sistema()
 
-# =============================================
+# DEBUG FINAL - Verifica tudo
+def debug_final():
+    try:
+        import sqlite3
+        conn = sqlite3.connect('c3_engenharia.db')
+        cursor = conn.cursor()
+        
+        print("=" * 60)
+        print("🔍 DEBUG FINAL DO SISTEMA")
+        print("=" * 60)
+        
+        # Ver tabelas
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tabelas = cursor.fetchall()
+        print(f"📊 Tabelas: {[t[0] for t in tabelas]}")
+        
+        # Ver usuários
+        cursor.execute("SELECT razao_social, cnpj, senha_hash FROM usuarios")
+        usuarios = cursor.fetchall()
+        print(f"👥 Total de usuários: {len(usuarios)}")
+        
+        for usuario in usuarios:
+            print(f"  👤 {usuario[0]} | CNPJ: {usuario[1]}")
+            print(f"     🔑 Hash: {usuario[2]}")
+        
+        conn.close()
+        print("=" * 60)
+    except Exception as e:
+        print(f"❌ Erro no debug: {e}")
+
+debug_final()
+
 # FOOTER
-# =============================================
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #718096; padding: 2rem;'>
@@ -1950,14 +2032,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# FOOTER
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: #718096; padding: 2rem;'>
-    <strong>🌐Sistema de Cotações C3 Engenharia © 2025</strong><br>
-    <small>🔒Sistema protegido com medidas de segurança avançadas</small>
-</div>
-""", unsafe_allow_html=True)
 
 
 
