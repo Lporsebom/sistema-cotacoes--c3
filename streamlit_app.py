@@ -508,30 +508,32 @@ def tempo_desde(data_str):
 # =============================================
 
 def inicializar_usuario_padrao():
-    """Cria o usuário padrão da C3 Engenharia se não existir"""
     session = get_session()
     try:
-        # Verificar se o usuário padrão já existe
-        usuario_existe = session.query(Usuario).filter_by(cnpj='12.345.678/0001-90').first()
-        
-        if not usuario_existe:
-            usuario = Usuario(
-                id='SOL-001',
-                razao_social='C3 Engenharia',
-                cnpj='12.345.678/0001-90',
-                email='caroline.frasseto@c3engenharia.com.br',
-                telefone='(19) 98931-4967',
-                cidade="Santa Bárbara D'Oeste - SP",
-                senha_hash=hashlib.sha256("17Sort34Son_".encode()).hexdigest(),
-                tipo='solicitante',
-                status='Ativa',
-                data_cadastro=datetime.now()
-            )
-            session.add(usuario)
+        # REMOVER o usuário antigo primeiro
+        usuario_antigo = session.query(Usuario).filter_by(cnpj='12.345.678/0001-90').first()
+        if usuario_antigo:
+            session.delete(usuario_antigo)
             session.commit()
-            print("Usuário padrão criado com sucesso!")
+        
+        # Criar novo com senha correta
+        usuario = Usuario(
+            id='SOL-001',
+            razao_social='C3 Engenharia',
+            cnpj='12.345.678/0001-90',
+            email='caroline.frasseto@c3engenharia.com.br',
+            telefone='(19) 98931-4967',
+            cidade="Santa Bárbara D'Oeste - SP",
+            senha_hash=hashlib.sha256("175or1345on_".encode()).hexdigest(),  # SENHA DA TELA
+            tipo='solicitante',
+            status='Ativa',
+            data_cadastro=datetime.now()
+        )
+        session.add(usuario)
+        session.commit()
+        print("Usuário padrão recriado com nova senha!")
     except Exception as e:
-        print(f"Erro ao criar usuário padrão: {e}")
+        print(f"Erro: {e}")
         session.rollback()
     finally:
         session.close()
@@ -1800,3 +1802,4 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
