@@ -512,11 +512,11 @@ def inicializar_usuario_padrao():
     session = get_session()
     try:
         # Verificar se o usuário padrão já existe
-        usuario = session.query(Usuario).filter_by(cnpj='12.345.678/0001-90').first()
+        usuario = session.query(Usuario).filter_by(cnpj='C3 Engenharia').first()
         
         if usuario:
             # ATUALIZAR senha do usuário existente
-            usuario.senha_hash = hashlib.sha256("175or1345on_".encode()).hexdigest()
+            usuario.senha_hash = hashlib.sha256("462462Ca_".encode()).hexdigest()
             session.commit()
             print("✅ Usuário padrão ATUALIZADO com nova senha!")
         else:
@@ -538,7 +538,7 @@ def inicializar_usuario_padrao():
             print("✅ Usuário padrão CRIADO com senha correta!")
         
         # DEBUG: Mostrar hash
-        print(f"🔍 Hash da senha '175or1345on_': {hashlib.sha256('175or1345on_'.encode()).hexdigest()}")
+        print(f"🔍 Hash da senha '462462Ca_': {hashlib.sha256('462462Ca_'.encode()).hexdigest()}")
         
     except Exception as e:
         print(f"❌ Erro ao criar/atualizar usuário padrão: {e}")
@@ -882,7 +882,7 @@ def debug_verificar_usuario():
         conn = sqlite3.connect('c3_engenharia.db')
         cursor = conn.cursor()
         
-        cursor.execute("SELECT * FROM usuarios WHERE cnpj = '12.345.678/0001-90'")
+        cursor.execute("SELECT * FROM usuarios WHERE cnpj = 'C3 Engenharia'")
         usuario = cursor.fetchone()
         
         if usuario:
@@ -1908,12 +1908,12 @@ def correcao_emergencial_senha():
             return
         
         # Verificar se usuário existe
-        cursor.execute("SELECT id FROM usuarios WHERE cnpj = '12.345.678/0001-90'")
+        cursor.execute("SELECT id FROM usuarios WHERE cnpj = 'C3 Engenharia'")
         usuario = cursor.fetchone()
         
         if usuario:
             # Atualizar
-            cursor.execute("UPDATE usuarios SET senha_hash = ? WHERE cnpj = '12.345.678/0001-90'", 
+            cursor.execute("UPDATE usuarios SET senha_hash = ? WHERE cnpj = 'C3 Engenharia'", 
                           (senha_hash,))
             print(f"✅ Senha ATUALIZADA para: {senha}")
         else:
@@ -1958,6 +1958,7 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
