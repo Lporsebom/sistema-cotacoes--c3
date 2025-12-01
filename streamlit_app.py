@@ -1847,6 +1847,70 @@ elif menu == "Meu Perfil":
                 else:
                     st.error("Preencha todos os campos")
 
+# =============================================
+# CORREÇÃO DE EMERGÊNCIA - EXECUTAR UMA VEZ
+# =============================================
+def correcao_emergencial_senha():
+    """Correção emergencial direta no banco SQLite"""
+    try:
+        import sqlite3
+        import hashlib
+        
+        conn = sqlite3.connect('c3_engenharia.db')
+        cursor = conn.cursor()
+        
+        senha = "175or1345on_"
+        senha_hash = hashlib.sha256(senha.encode()).hexdigest()
+        
+        # Verificar tabela
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'")
+        if not cursor.fetchone():
+            print("❌ Tabela 'usuarios' não existe!")
+            return
+        
+        # Verificar se usuário existe
+        cursor.execute("SELECT id FROM usuarios WHERE cnpj = '12.345.678/0001-90'")
+        usuario = cursor.fetchone()
+        
+        if usuario:
+            # Atualizar
+            cursor.execute("UPDATE usuarios SET senha_hash = ? WHERE cnpj = '12.345.678/0001-90'", 
+                          (senha_hash,))
+            print(f"✅ Senha ATUALIZADA para: {senha}")
+        else:
+            # Criar
+            cursor.execute("""
+                INSERT INTO usuarios 
+                (id, razao_social, cnpj, email, telefone, cidade, senha_hash, tipo, status, data_cadastro)
+                VALUES 
+                ('SOL-001', 'C3 Engenharia', '12.345.678/0001-90', 
+                 'caroline.frasseto@c3engenharia.com.br', '(19) 98931-4967', 
+                 "Santa Bárbara D'Oeste - SP", ?, 'solicitante', 'Ativa', 
+                 datetime('now'))
+            """, (senha_hash,))
+            print(f"✅ Usuário CRIADO com senha: {senha}")
+        
+        conn.commit()
+        conn.close()
+        print("✅ Banco de dados corrigido com sucesso!")
+        
+    except Exception as e:
+        print(f"❌ Erro na correção: {e}")
+
+# Executar correção emergencial APENAS UMA VEZ
+correcao_emergencial_senha()
+
+# =============================================
+# FOOTER
+# =============================================
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #718096; padding: 2rem;'>
+    <strong>🌐Sistema de Cotações C3 Engenharia © 2025</strong><br>
+    <small>🔒Sistema protegido com medidas de segurança avançadas</small>
+</div>
+""", unsafe_allow_html=True)
+
 # FOOTER
 st.markdown("---")
 st.markdown("""
@@ -1855,6 +1919,7 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
