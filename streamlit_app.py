@@ -508,32 +508,40 @@ def tempo_desde(data_str):
 # =============================================
 
 def inicializar_usuario_padrao():
+    """Cria/Atualiza o usuário padrão da C3 Engenharia com senha correta"""
     session = get_session()
     try:
-        # REMOVER o usuário antigo primeiro
-        usuario_antigo = session.query(Usuario).filter_by(cnpj='12.345.678/0001-90').first()
-        if usuario_antigo:
-            session.delete(usuario_antigo)
-            session.commit()
+        # Verificar se o usuário padrão já existe
+        usuario = session.query(Usuario).filter_by(cnpj='12.345.678/0001-90').first()
         
-        # Criar novo com senha correta
-        usuario = Usuario(
-            id='SOL-001',
-            razao_social='C3 Engenharia',
-            cnpj='12.345.678/0001-90',
-            email='caroline.frasseto@c3engenharia.com.br',
-            telefone='(19) 98931-4967',
-            cidade="Santa Bárbara D'Oeste - SP",
-            senha_hash=hashlib.sha256("175or1345on_".encode()).hexdigest(),  # SENHA DA TELA
-            tipo='solicitante',
-            status='Ativa',
-            data_cadastro=datetime.now()
-        )
-        session.add(usuario)
-        session.commit()
-        print("Usuário padrão recriado com nova senha!")
+        if usuario:
+            # ATUALIZAR senha do usuário existente
+            usuario.senha_hash = hashlib.sha256("175or1345on_".encode()).hexdigest()
+            session.commit()
+            print("✅ Usuário padrão ATUALIZADO com nova senha!")
+        else:
+            # Criar novo usuário
+            usuario = Usuario(
+                id='SOL-001',
+                razao_social='C3 Engenharia',
+                cnpj='12.345.678/0001-90',
+                email='caroline.frasseto@c3engenharia.com.br',
+                telefone='(19) 98931-4967',
+                cidade="Santa Bárbara D'Oeste - SP",
+                senha_hash=hashlib.sha256("175or1345on_".encode()).hexdigest(),  # SENHA CORRETA
+                tipo='solicitante',
+                status='Ativa',
+                data_cadastro=datetime.now()
+            )
+            session.add(usuario)
+            session.commit()
+            print("✅ Usuário padrão CRIADO com senha correta!")
+        
+        # DEBUG: Mostrar hash
+        print(f"🔍 Hash da senha '175or1345on_': {hashlib.sha256('175or1345on_'.encode()).hexdigest()}")
+        
     except Exception as e:
-        print(f"Erro: {e}")
+        print(f"❌ Erro ao criar/atualizar usuário padrão: {e}")
         session.rollback()
     finally:
         session.close()
@@ -1847,5 +1855,6 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
 
