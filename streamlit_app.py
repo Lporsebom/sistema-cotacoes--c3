@@ -548,12 +548,45 @@ inicializar_usuario_padrao()
 def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
 
+# =============================================
+# FUNÇÃO PARA CORRIGIR SENHA DO USUÁRIO PADRÃO
+# =============================================
+def corrigir_senha_usuario_padrao():
+    """CORRIGE a senha do usuário padrão - execute UMA VEZ"""
+    session = get_session()
+    try:
+        usuario = session.query(Usuario).filter_by(cnpj='12.345.678/0001-90').first()
+        if usuario:
+            # Atualizar com a senha CORRETA
+            nova_senha = "175or1345on_"
+            usuario.senha_hash = hashlib.sha256(nova_senha.encode()).hexdigest()
+            session.commit()
+            print(f"✅ Senha corrigida para: {nova_senha}")
+            print(f"✅ Hash atualizado no banco!")
+            return True
+        else:
+            print("❌ Usuário não encontrado!")
+            return False
+    except Exception as e:
+        print(f"❌ Erro: {e}")
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
+# Executar a correção automaticamente
+corrigir_senha_usuario_padrao()
+
+# =============================================
+# FUNÇÕES DE AUTENTICAÇÃO SEGURA
+# =============================================
 def verificar_login(usuario_input, senha):
     """Verifica login com banco de dados"""
+  
     if not usuario_input or not senha:
         return None
         
-    # Limita tentativas de login (proteção contra brute force)
+    # Limita tentativas de login
     if 'login_attempts' not in st.session_state:
         st.session_state.login_attempts = 0
         st.session_state.last_attempt = time.time()
@@ -575,17 +608,28 @@ def verificar_login(usuario_input, senha):
         else:
             st.session_state.login_attempts = 0
     
+    session = None  # Definir antes para evitar erro no finally
     try:
         session = get_session()
         senha_hash = hash_senha(senha)
+        
+        # DEBUG: Mostrar o hash sendo gerado
+        print(f"DEBUG - Usuário digitado: {usuario_input}")
+        print(f"DEBUG - Senha digitada: {senha}")
+        print(f"DEBUG - Hash gerado: {senha_hash}")
         
         # Buscar usuário por CNPJ ou razão social
         usuario = session.query(Usuario).filter(
             (Usuario.cnpj == usuario_input) | (Usuario.razao_social == usuario_input)
         ).first()
         
+        if usuario:
+            print(f"DEBUG - Usuário encontrado: {usuario.razao_social}")
+            print(f"DEBUG - Hash no banco: {usuario.senha_hash}")
+            print(f"DEBUG - Status: {usuario.status}")
+        
         if usuario and usuario.senha_hash == senha_hash and usuario.status == 'Ativa':
-            st.session_state.login_attempts = 0  # Reseta tentativas
+            st.session_state.login_attempts = 0
             adicionar_log_seguranca({
                 'usuario_id': usuario.id,
                 'acao': 'LOGIN_SUCESSO',
@@ -621,7 +665,7 @@ def verificar_login(usuario_input, senha):
             return None
             
     except Exception as e:
-        st.error("Erro no sistema de login")
+        st.error(f"Erro no sistema de login: {str(e)}")
         adicionar_log_seguranca({
             'usuario_id': 'SISTEMA',
             'acao': 'ERRO_LOGIN',
@@ -632,7 +676,8 @@ def verificar_login(usuario_input, senha):
         })
         return None
     finally:
-        session.close()
+        if session:
+            session.close()
 
 def cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, tipo='transportadora'):
     try:
@@ -1802,4 +1847,5 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
