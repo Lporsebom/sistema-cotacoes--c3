@@ -1034,16 +1034,8 @@ if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-
-    
-
-# VERIFICAÇÕES DE SEGURANÇA
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-
-if not st.session_state.logged_in:
     mostrar_login()
-    st.stop()  # Esta linha estava com indentação errada
+    st.stop()
 
 # =============================================
 # SISTEMA PRINCIPAL (APÓS LOGIN)
@@ -1928,6 +1920,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
     
+
 
 
 
