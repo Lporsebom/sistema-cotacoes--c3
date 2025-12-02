@@ -1040,9 +1040,9 @@ if not st.session_state.logged_in:
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🧪 TESTE DIRETO DE LOGIN")
     
-    with st.sidebar.form("teste_login_direto"):
-        st.write("**Credenciais de Teste:**")
-        st.code("Usuário: C3 Engenharia\nSenha: 462462Ca_")
+   # with st.sidebar.form("teste_login_direto"):
+        #st.write("**Credenciais de Teste:**")
+        #st.code("Usuário: C3 Engenharia\nSenha: 462462Ca_")
         
         usuario_teste = st.text_input("Usuário", value="C3 Engenharia", key="teste_usuario")
         senha_teste = st.text_input("Senha", type="password", value="462462Ca_", key="teste_senha")
@@ -2077,6 +2077,7 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
