@@ -1136,8 +1136,13 @@ if st.sidebar.button("🚨 Reset de Emergência (Login)", type="primary", use_co
 
 st.sidebar.markdown("---")
 
-mostrar_login()
-    st.stop()  # <-- ADICIONE ESTA LINHA PARA PARAR AQUI
+# VERIFICAÇÕES DE SEGURANÇA
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    mostrar_login()
+    st.stop()  # Esta linha estava com indentação errada
 
 # =============================================
 # SISTEMA PRINCIPAL (APÓS LOGIN)
@@ -2019,5 +2024,6 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
 
