@@ -1034,160 +1034,8 @@ if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    # =============================================
-    # TESTE DIRETO DE LOGIN (SIDEBAR)
-    # =============================================
-    st.sidebar.markdown("---")
-    #st.sidebar.markdown("### 🧪 TESTE DIRETO DE LOGIN")
+
     
-   # with st.sidebar.form("teste_login_direto"):
-        #st.write("**Credenciais de Teste:**")
-        #st.code("Usuário: C3 Engenharia\nSenha: 462462Ca_")
-        
-        usuario_teste = st.text_input("Usuário", value="C3 Engenharia", key="teste_usuario")
-        senha_teste = st.text_input("Senha", type="password", value="462462Ca_", key="teste_senha")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            testar_btn = st.form_submit_button("🧪 Testar", use_container_width=True)
-        with col2:
-            entrar_btn = st.form_submit_button("🚪 Entrar", use_container_width=True)
-        
-        if testar_btn or entrar_btn:
-            with st.spinner("Testando login..."):
-                resultado = verificar_login(usuario_teste, senha_teste)
-                if resultado:
-                    st.success(f"✅ Login funciona! Usuário: {resultado['razao_social']}")
-                    
-                    # Se clicou em "Entrar", faz login automaticamente
-                    if entrar_btn:
-                        st.session_state.logged_in = True
-                        st.session_state.usuario_id = resultado['id']
-                        st.session_state.razao_social = resultado['razao_social']
-                        st.session_state.tipo_usuario = resultado['tipo']
-                        time.sleep(1)
-                        st.rerun()
-                else:
-                    st.error("❌ Login falhou!")
-                    st.info("Verifique o console para detalhes")
-    
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🛠️ FERRAMENTAS")
-
-# BOTÃO 1: Recriar Banco
-if st.sidebar.button("🔄 Recriar Banco de Dados", type="secondary", use_container_width=True):
-    try:
-        import os
-        if os.path.exists('c3_engenharia.db'):
-            os.remove('c3_engenharia.db')
-            st.sidebar.success("✅ Banco removido!")
-        
-        # Recriar todas as tabelas
-        Base.metadata.create_all(engine)
-        
-        # Criar usuário correto
-        conn = sqlite3.connect('c3_engenharia.db')
-        cursor = conn.cursor()
-        
-        senha = "462462Ca_"
-        senha_hash = hashlib.sha256(senha.encode()).hexdigest()
-        
-        print(f"\n🔧 CRIANDO NOVO USUÁRIO:")
-        print(f"   Senha: {senha}")
-        print(f"   Hash: {senha_hash}")
-        
-        cursor.execute("""
-            INSERT OR REPLACE INTO usuarios 
-            (id, razao_social, cnpj, email, telefone, cidade, senha_hash, tipo, status, data_cadastro)
-            VALUES 
-            ('SOL-001', 'C3 Engenharia', '12.345.678/0001-90', 
-             'caroline.frasseto@c3engenharia.com.br', '(19) 98931-4967', 
-             'Santa Bárbara D''Oeste - SP', ?, 'solicitante', 'Ativa', 
-             datetime('now'))
-        """, (senha_hash,))
-        
-        conn.commit()
-        
-        # Verificar
-        cursor.execute("SELECT razao_social, senha_hash FROM usuarios WHERE cnpj = '12.345.678/0001-90'")
-        resultado = cursor.fetchone()
-        
-        conn.close()
-        
-        st.sidebar.success("✅ Banco recriado com sucesso!")
-        st.sidebar.info(f"**Usuário:** C3 Engenharia")
-        st.sidebar.info(f"**Senha:** {senha}")
-        st.sidebar.info(f"**Hash:** {senha_hash}")
-        
-        # Resetar sessão
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        
-        st.rerun()
-        
-    except Exception as e:
-        st.sidebar.error(f"❌ Erro: {e}")
-
-# BOTÃO 2: Reset de Emergência (ADICIONE ESTE NOVO BOTÃO)
-if st.sidebar.button("🚨 Reset de Emergência (Login)", type="primary", use_container_width=True):
-    with st.spinner("Corrigindo problema de login..."):
-        try:
-            conn = sqlite3.connect('c3_engenharia.db')
-            cursor = conn.cursor()
-            
-            # Senha CORRETA
-            SENHA = "462462Ca_"
-            HASH_CORRETO = hashlib.sha256(SENHA.encode()).hexdigest()
-            
-            print(f"\n🚨 RESET DE EMERGÊNCIA:")
-            print(f"   Senha definida: {SENHA}")
-            print(f"   Hash correto: {HASH_CORRETO}")
-            
-            # Verificar se usuário existe
-            cursor.execute("SELECT razao_social, senha_hash FROM usuarios WHERE cnpj = '12.345.678/0001-90' OR razao_social = 'C3 Engenharia'")
-            usuario = cursor.fetchone()
-            
-            if usuario:
-                print(f"   Usuário encontrado: {usuario[0]}")
-                print(f"   Hash antigo: {usuario[1]}")
-                
-                # Atualizar senha
-                cursor.execute("""
-                    UPDATE usuarios 
-                    SET senha_hash = ?
-                    WHERE cnpj = '12.345.678/0001-90' OR razao_social = 'C3 Engenharia'
-                """, (HASH_CORRETO,))
-                
-                st.sidebar.success(f"✅ Senha resetada: {SENHA}")
-            else:
-                # Criar usuário
-                cursor.execute("""
-                    INSERT INTO usuarios 
-                    (id, razao_social, cnpj, email, telefone, cidade, senha_hash, tipo, status, data_cadastro)
-                    VALUES 
-                    ('SOL-001', 'C3 Engenharia', '12.345.678/0001-90', 
-                     'caroline.frasseto@c3engenharia.com.br', '(19) 98931-4967', 
-                     'Santa Bárbara D''Oeste - SP', ?, 'solicitante', 'Ativa', 
-                     datetime('now'))
-                """, (HASH_CORRETO,))
-                
-                st.sidebar.success(f"✅ Usuário criado com senha: {SENHA}")
-            
-            conn.commit()
-            
-            # Testar login automaticamente
-            cursor.execute("SELECT senha_hash FROM usuarios WHERE razao_social = 'C3 Engenharia'")
-            hash_final = cursor.fetchone()
-            
-            conn.close()
-            
-            st.sidebar.info(f"🔐 Hash final: {hash_final[0]}")
-            st.sidebar.success("🔄 Tente fazer login novamente!")
-            
-        except Exception as e:
-            st.sidebar.error(f"❌ Erro no reset: {e}")
-
-st.sidebar.markdown("---")
 
 # VERIFICAÇÕES DE SEGURANÇA
 if 'logged_in' not in st.session_state:
@@ -1201,42 +1049,15 @@ if not st.session_state.logged_in:
 # SISTEMA PRINCIPAL (APÓS LOGIN)
 # =============================================
 
-# HEADER PERSONALIZADO
-st.markdown(f"""
-<div class="main-header">
-   <span class="blue-emoji">🌐</span> SISTEMA DE COTAÇÕES | {st.session_state.razao_social}
-</div>
-""", unsafe_allow_html=True)
-
-# SIDEBAR PERSONALIZADA
-with st.sidebar:
-    st.markdown(f"### 👤 {st.session_state.razao_social}")
-    st.markdown(f"**Tipo:** {'Solicitante' if st.session_state.tipo_usuario == 'solicitante' else 'Transportadora'}")
-    st.markdown("---")
-    
-    # MENU DINÂMICO BASEADO NO TIPO DE USUÁRIO
-    if st.session_state.tipo_usuario == 'solicitante':
-        menu_options = [
-            "Dashboard", 
-            "Nova Solicitação", 
-            "Gerenciar Solicitações",
-            "Cotações Recebidas",
-            "Transportadoras Cadastradas",
-            "Backup de Dados",
-            "Meu Perfil"
-        ]
-    else:
-        menu_options = [
-            "Dashboard", 
-            "Fretes Disponíveis", 
-            "Minhas Cotações",
-            "Meu Perfil"
-        ]
-    
-    menu = st.radio("MENU PRINCIPAL", menu_options)
-    st.markdown("---")
-    
-    # BOTÃO DE LOGOUT SEGURO
+# CABEÇALHO COM BOTÃO DE LOGOUT
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.markdown(f"""
+    <div class="main-header">
+        <span class="blue-emoji">🌐</span> SISTEMA DE COTAÇÕES | {st.session_state.razao_social}
+    </div>
+    """, unsafe_allow_html=True)
+with col2:
     if st.button("Sair do Sistema", use_container_width=True):
         adicionar_log_seguranca({
             'usuario_id': st.session_state.usuario_id,
@@ -1250,9 +1071,38 @@ with st.sidebar:
             del st.session_state[key]
         st.rerun()
 
+# MENU DINÂMICO BASEADO NO TIPO DE USUÁRIO
+if st.session_state.tipo_usuario == 'solicitante':
+    menu_options = [
+        "Dashboard", 
+        "Nova Solicitação", 
+        "Gerenciar Solicitações",
+        "Cotações Recebidas",
+        "Transportadoras Cadastradas",
+        "Backup de Dados",
+        "Meu Perfil"
+    ]
+else:
+    menu_options = [
+        "Dashboard", 
+        "Fretes Disponíveis", 
+        "Minhas Cotações",
+        "Meu Perfil"
+    ]
+
+# SELECTBOX PARA MENU
+col1, col2 = st.columns([3, 1])
+with col1:
+    menu = st.selectbox("Navegação", menu_options, label_visibility="collapsed")
+with col2:
+    st.markdown(f"**Tipo:** {'Solicitante' if st.session_state.tipo_usuario == 'solicitante' else 'Transportadora'}")
+
+st.markdown("---")
+
 # =============================================
 # DASHBOARD DINÂMICO
 # =============================================
+
 if menu == "Dashboard":
     
     if st.session_state.tipo_usuario == 'solicitante':
@@ -2077,6 +1927,9 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+    
+
+
 
 
 
