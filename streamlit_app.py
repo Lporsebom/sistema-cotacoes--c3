@@ -620,7 +620,7 @@ def tempo_desde(data_str):
 # =============================================
 
 def verificar_login(usuario_input, senha):
-    """Verifica login - VERSÃO COM DEBUG COMPLETO"""
+    """Verifica login para qualquer usuário"""
     if not usuario_input or not senha:
         st.error("Preencha todos os campos")
         return None
@@ -634,40 +634,38 @@ def verificar_login(usuario_input, senha):
     try:
         # 1. Calcular hash da senha digitada
         senha_hash_digitada = hashlib.sha256(senha.encode()).hexdigest()
-        print(f"\n🔐 HASH DA SENHA DIGITADA:")
-        print(f"   Senha: {senha}")
-        print(f"   Hash: {senha_hash_digitada}")
+        print(f"\n🔐 HASH DA SENHA DIGITADA: {senha_hash_digitada}")
         
         # 2. Conectar ao banco
         conn = sqlite3.connect('c3_engenharia.db')
         cursor = conn.cursor()
         
-        # 3. Verificar TODOS os usuários no banco primeiro
-        cursor.execute("SELECT razao_social, cnpj, senha_hash FROM usuarios")
-        todos_usuarios = cursor.fetchall()
-        print(f"\n📋 TODOS OS USUÁRIOS NO BANCO ({len(todos_usuarios)}):")
-        for user in todos_usuarios:
-            print(f"   - '{user[0]}' | CNPJ: {user[1]} | Hash: {user[2][:20]}...")
+        # 3. BUSCAR USUÁRIO DE 3 FORMAS:
+        #   1. Por Razão Social exata
+        #   2. Por Razão Social (case-insensitive)
+        #   3. Por CNPJ (com ou sem formatação)
         
-        # 4. Buscar usuário específico
         usuario = None
         
-        # Tentar por "C3 Engenharia" exato
-        cursor.execute("SELECT * FROM usuarios WHERE razao_social = ?", ("C3 Engenharia",))
+        # Tentar por Razão Social exata
+        cursor.execute("SELECT * FROM usuarios WHERE razao_social = ?", (usuario_input,))
         usuario = cursor.fetchone()
         
-        if usuario:
-            print(f"\n✅ USUÁRIO 'C3 Engenharia' ENCONTRADO!")
-        else:
-            print(f"\n❌ USUÁRIO 'C3 Engenharia' NÃO ENCONTRADO!")
-            # Tentar case insensitive
-            cursor.execute("SELECT * FROM usuarios WHERE LOWER(razao_social) = LOWER(?)", ("C3 Engenharia",))
+        if not usuario:
+            # Tentar por Razão Social case-insensitive
+            cursor.execute("SELECT * FROM usuarios WHERE LOWER(razao_social) = LOWER(?)", (usuario_input,))
             usuario = cursor.fetchone()
-            if usuario:
-                print(f"✅ Encontrado com busca case-insensitive")
+        
+        if not usuario:
+            # Tentar por CNPJ (limpar formatação)
+            cnpj_limpo = re.sub(r'[^0-9]', '', str(usuario_input))
+            if len(cnpj_limpo) == 14:  # CNPJ válido tem 14 números
+                # Buscar por CNPJ limpo no banco
+                cursor.execute("SELECT * FROM usuarios WHERE REPLACE(REPLACE(REPLACE(cnpj, '.', ''), '/', ''), '-', '') = ?", (cnpj_limpo,))
+                usuario = cursor.fetchone()
         
         if usuario:
-            print(f"\n📊 DETALHES DO USUÁRIO:")
+            print(f"\n✅ USUÁRIO ENCONTRADO!")
             print(f"   ID: {usuario[0]}")
             print(f"   Razão Social: '{usuario[1]}'")
             print(f"   CNPJ: {usuario[2]}")
@@ -692,11 +690,9 @@ def verificar_login(usuario_input, senha):
                     'data_cadastro': usuario[9]
                 }
             else:
-                print("\n❌ ERRO: HASHES NÃO BATEM!")
-                print(f"   No banco ({len(usuario[6])} chars): {usuario[6]}")
-                print(f"   Digitado ({len(senha_hash_digitada)} chars): {senha_hash_digitada}")
+                print("\n❌ ERRO: SENHA INCORRETA!")
         else:
-            print("\n❌ ERRO: Nenhum usuário encontrado com esse nome!")
+            print(f"\n❌ ERRO: Usuário '{usuario_input}' não encontrado!")
         
         conn.close()
         
@@ -708,15 +704,53 @@ def verificar_login(usuario_input, senha):
     print("="*60)
     return None
 
+def verificar_usuario_protegido(cnpj, razao_social):
+    """Verifica se está tentando cadastrar com dados do usuário mestre"""
+    # CNPJ do usuário mestre
+    cnpj_mestre = "12.345.678/0001-90"
+    
+    # Limpar CNPJs para comparação
+    cnpj_limpo_tentativa = re.sub(r'[^0-9]', '', str(cnpj))
+    cnpj_limpo_mestre = re.sub(r'[^0-9]', '', str(cnpj_mestre))
+    
+    # Razão Social do usuário mestre
+    razao_social_mestre = "C3 Engenharia"
+    
+    # Verificações
+    if cnpj_limpo_tentativa == cnpj_limpo_mestre:
+        return False, "CNPJ reservado para uso interno do sistema"
+    
+    if razao_social.lower() == razao_social_mestre.lower():
+        return False, "Razão Social reservada para uso interno do sistema"
+    
+    return True, "OK"
+
 def cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, tipo='transportadora'):
     try:
+        # 1. VERIFICAÇÃO DE SEGURANÇA - Usuário mestre
+        valido, mensagem = verificar_usuario_protegido(cnpj, razao_social)
+        if not valido:
+            st.error(f"Erro de segurança: {mensagem}")
+            return False
+        
+        # 2. VERIFICAR SE JÁ EXISTE
         session = get_session()
         
         # Verificar se CNPJ já existe
         usuario_existente = session.query(Usuario).filter_by(cnpj=cnpj).first()
         if usuario_existente:
+            st.error("CNPJ já cadastrado no sistema")
+            session.close()
             return False
         
+        # Verificar se Razão Social já existe
+        usuario_existente_nome = session.query(Usuario).filter_by(razao_social=razao_social).first()
+        if usuario_existente_nome:
+            st.error("Razão Social já cadastrada no sistema")
+            session.close()
+            return False
+        
+        # 3. CRIAR USUÁRIO
         usuario_id = f"USER-{uuid.uuid4().hex[:8].upper()}"
         senha_hash = hash_senha(senha)
         
@@ -736,19 +770,35 @@ def cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, tipo='
         success = adicionar_usuario(usuario_dict)
         
         if success:
+            # LOG DE SEGURANÇA
             adicionar_log_seguranca({
                 'usuario_id': 'SISTEMA',
                 'acao': 'CADASTRO_USUARIO',
-                'descricao': f'Novo usuário: {razao_social}',
+                'descricao': f'Novo usuário cadastrado: {razao_social} ({cnpj})',
                 'ip': 'N/A',
                 'user_agent': 'N/A',
                 'created_at': datetime.now()
             })
+            
+            # DEBUG NO CONSOLE
+            print(f"\n✅ NOVO USUÁRIO CADASTRADO:")
+            print(f"   ID: {usuario_id}")
+            print(f"   Razão Social: {razao_social}")
+            print(f"   CNPJ: {cnpj}")
+            print(f"   Email: {email}")
+            print(f"   Senha: {senha}")
+            print(f"   Hash: {senha_hash}")
+            print(f"   Tipo: {tipo}")
+            
             return True
+        
+        session.close()
         return False
         
     except Exception as e:
         st.error(f"Erro ao cadastrar usuário: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 # =============================================
@@ -959,6 +1009,9 @@ def mostrar_login():
                 senha_valida, msg_senha = validar_senha_forte(senha)
                 if not senha_valida:
                     erros.append(msg_senha)
+                    
+                if razao_social.lower() == "c3 engenharia":
+                    erros.append("Esta razão social é reservada para uso interno")
                 
                 if senha != confirmar_senha:
                     erros.append("As senhas não coincidem")
@@ -2024,6 +2077,7 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
