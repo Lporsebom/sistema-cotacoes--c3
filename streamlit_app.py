@@ -1038,7 +1038,7 @@ if not st.session_state.logged_in:
     # TESTE DIRETO DE LOGIN (SIDEBAR)
     # =============================================
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🧪 TESTE DIRETO DE LOGIN")
+    #st.sidebar.markdown("### 🧪 TESTE DIRETO DE LOGIN")
     
    # with st.sidebar.form("teste_login_direto"):
         #st.write("**Credenciais de Teste:**")
@@ -2077,6 +2077,7 @@ st.markdown("""
     <small>🔒Sistema protegido com medidas de segurança avançadas</small>
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
