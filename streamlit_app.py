@@ -1,53 +1,79 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import hashlib
-import time
-import re
 import secrets
+import re
 import string
-from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, Text
+import os
+import sqlite3
+from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, Text, Boolean, func, and_, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, scoped_session
-import json
-import os
-import sqlite3  # Adicione esta linha
+from sqlalchemy.exc import IntegrityError
+import bcrypt
+import time
+import plotly.express as px
+import plotly.graph_objects as go
 
 # =============================================
-# TESTE INICIAL DO SISTEMA
+# CONFIGURAÇÕES DE SEGURANÇA
 # =============================================
-print("\n" + "="*60)
-print("🚀 INICIANDO SISTEMA C3 ENGENHARIA")
-print("="*60)
-
-# Testar hash da senha
-SENHA_TESTE = "462462Ca_"
-HASH_TESTE = hashlib.sha256(SENHA_TESTE.encode()).hexdigest()
-print(f"\n🔐 TESTE DE HASH:")
-print(f"   Senha: {SENHA_TESTE}")
-print(f"   Hash: {HASH_TESTE}")
-print("="*60 + "\n")
-
-# Adicione esta função APÓS as importações e ANTES da configuração do banco
+MAX_TENTATIVAS_LOGIN = 5
+BLOQUEIO_MINUTOS = 15
+PEPPER = os.environ.get('PEPPER', 'c3_secret_pepper_2025')
 
 # =============================================
-# CONFIGURAÇÃO DO BANCO DE DADOS SQLite
+# FUNÇÕES DE HASH SEGURO
+# =============================================
+def hash_senha(senha):
+    senha_com_pepper = senha + PEPPER
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(senha_com_pepper.encode('utf-8'), salt).decode('utf-8')
+
+def verificar_senha(senha, hash_armazenado):
+    senha_com_pepper = senha + PEPPER
+    return bcrypt.checkpw(senha_com_pepper.encode('utf-8'), hash_armazenado.encode('utf-8'))
+
+def criptografar_dado(dado):
+    if not dado:
+        return None
+    salt = secrets.token_hex(16)
+    hash_obj = hashlib.pbkdf2_hmac('sha256', dado.encode(), salt.encode(), 100000)
+    return f"{salt}:{hash_obj.hex()}"
+
+def verificar_dado_criptografado(dado, hash_armazenado):
+    if not hash_armazenado:
+        return False
+    try:
+        salt, hash_dado = hash_armazenado.split(':')
+        hash_verificar = hashlib.pbkdf2_hmac('sha256', dado.encode(), salt.encode(), 100000)
+        return secrets.compare_digest(hash_verificar.hex(), hash_dado)
+    except:
+        return False
+
+# =============================================
+# MODELOS DE DADOS
 # =============================================
 Base = declarative_base()
 
 class Usuario(Base):
     __tablename__ = 'usuarios'
     id = Column(String, primary_key=True)
-    razao_social = Column(String(200), nullable=False)
-    cnpj = Column(String(20), unique=True, nullable=False)
-    email = Column(String(100), nullable=False)
+    razao_social = Column(String(200), nullable=False, unique=True)
+    cnpj_hash = Column(String(255), nullable=False)
+    cnpj_ultimos4 = Column(String(4))
+    email_hash = Column(String(255), nullable=False)
     telefone = Column(String(20))
     cidade = Column(String(100))
     senha_hash = Column(String(255), nullable=False)
     tipo = Column(String(20), default='transportadora')
     status = Column(String(20), default='Ativa')
     data_cadastro = Column(DateTime, default=datetime.now)
+    ultimo_login = Column(DateTime)
+    tentativas_login = Column(Integer, default=0)
+    bloqueado_ate = Column(DateTime)
 
 class Solicitacao(Base):
     __tablename__ = 'solicitacoes'
@@ -62,7 +88,10 @@ class Solicitacao(Base):
     observacoes = Column(Text)
     status = Column(String(20), default='Aberta')
     usuario_id = Column(String, nullable=False)
+    leilao_encerrado = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
+    vencedor_id = Column(String)
+    valor_vencedor = Column(Float)
 
 class Cotacao(Base):
     __tablename__ = 'cotacoes'
@@ -75,6 +104,7 @@ class Cotacao(Base):
     observacoes = Column(Text)
     status = Column(String(20), default='Pendente')
     created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 class LogSeguranca(Base):
     __tablename__ = 'logs_seguranca'
@@ -86,108 +116,27 @@ class LogSeguranca(Base):
     user_agent = Column(String(200))
     created_at = Column(DateTime, default=datetime.now)
 
-# Criar engine e tabelas
+class TentativaLogin(Base):
+    __tablename__ = 'tentativas_login'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ip = Column(String(50))
+    tentativas = Column(Integer, default=0)
+    bloqueado_ate = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+
+# =============================================
+# CONFIGURAÇÃO DO BANCO
+# =============================================
 engine = create_engine('sqlite:///c3_engenharia.db', connect_args={'check_same_thread': False})
 Base.metadata.create_all(engine)
 Session = scoped_session(sessionmaker(bind=engine))
 
-# =============================================
-# INICIALIZAÇÃO DO SISTEMA
-# =============================================
-def inicializar_sistema_completo():
-    """Inicializa todo o sistema garantindo que o usuário padrão existe"""
-    print("\n" + "="*60)
-    print("🚀 INICIALIZAÇÃO DO SISTEMA")
-    print("="*60)
-    
-    # 1. Criar tabelas se não existirem
-    Base.metadata.create_all(engine)
-    
-    # 2. Criar usuário padrão com SQL direto (garantido)
-    try:
-        import sqlite3
-        conn = sqlite3.connect('c3_engenharia.db')
-        cursor = conn.cursor()
-        
-        # Verificar se usuário já existe
-        cursor.execute("SELECT * FROM usuarios WHERE cnpj = '12.345.678/0001-90'")
-        usuario_existente = cursor.fetchone()
-        
-        senha = "462462Ca_"
-        senha_hash = hashlib.sha256(senha.encode()).hexdigest()
-        
-        if not usuario_existente:
-            print("📝 Criando usuário padrão...")
-            cursor.execute("""
-                INSERT INTO usuarios 
-                (id, razao_social, cnpj, email, telefone, cidade, senha_hash, tipo, status, data_cadastro)
-                VALUES 
-                ('SOL-001', 'C3 Engenharia', '12.345.678/0001-90', 
-                 'caroline.frasseto@c3engenharia.com.br', '(19) 98931-4967', 
-                 'Santa Bárbara D''Oeste - SP', ?, 'solicitante', 'Ativa', 
-                 datetime('now'))
-            """, (senha_hash,))
-            print("✅ Usuário criado!")
-        else:
-            print("🔄 Atualizando senha do usuário...")
-            cursor.execute("""
-                UPDATE usuarios 
-                SET senha_hash = ?
-                WHERE cnpj = '12.345.678/0001-90'
-            """, (senha_hash,))
-            print("✅ Senha atualizada!")
-        
-        conn.commit()
-        
-        # Verificar
-        cursor.execute("SELECT razao_social, senha_hash FROM usuarios WHERE cnpj = '12.345.678/0001-90'")
-        resultado = cursor.fetchone()
-        
-        print("✅ VERIFICAÇÃO:")
-        print(f"   Usuário: {resultado[0]}")
-        print(f"   Hash: {resultado[1]}")
-        print(f"   Senha: {senha}")
-        
-        conn.close()
-        
-    except Exception as e:
-        print(f"❌ Erro na inicialização: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    print("="*60)
-
-# Executar inicialização
-inicializar_sistema_completo()
-
-# =============================================
-# TESTE AUTOMÁTICO DE LOGIN
-# =============================================
-def teste_login_automatico():
-    """Testa o login automaticamente para debug"""
-    print("\n" + "="*60)
-    print("🧪 TESTE AUTOMÁTICO DE LOGIN")
-    print("="*60)
-    
-    # Teste com Razão Social
-    usuario_nome = "C3 Engenharia"
-    senha = "462462Ca_"
-    
-    print(f"Usuário: {usuario_nome}")
-    print(f"Senha: {senha}")
-    print(f"Hash esperado: {hashlib.sha256(senha.encode()).hexdigest()}")
-    
-    print("="*60 + "\n")
-
-# Executar teste automático
-teste_login_automatico()
-
-# =============================================
-# FUNÇÕES DO BANCO DE DADOS
-# =============================================
-
 def get_session():
     return Session()
+
+# =============================================
+# FUNÇÕES DE BANCO DE DADOS - COMPLETAS
+# =============================================
 
 def get_usuarios():
     session = get_session()
@@ -196,11 +145,10 @@ def get_usuarios():
         return [{
             'id': u.id,
             'razao_social': u.razao_social,
-            'cnpj': u.cnpj,
-            'email': u.email,
+            'cnpj_ultimos4': u.cnpj_ultimos4,
+            'email': '****@****',  # Não expor email completo
             'telefone': u.telefone,
             'cidade': u.cidade,
-            'senha_hash': u.senha_hash,
             'tipo': u.tipo,
             'status': u.status,
             'data_cadastro': u.data_cadastro.strftime('%d-%m-%Y %H:%M:%S') if u.data_cadastro else None
@@ -216,46 +164,13 @@ def get_usuario_por_id(usuario_id):
             return {
                 'id': usuario.id,
                 'razao_social': usuario.razao_social,
-                'cnpj': usuario.cnpj,
-                'email': usuario.email,
                 'telefone': usuario.telefone,
                 'cidade': usuario.cidade,
-                'senha_hash': usuario.senha_hash,
                 'tipo': usuario.tipo,
                 'status': usuario.status,
                 'data_cadastro': usuario.data_cadastro.strftime('%d-%m-%Y %H:%M:%S') if usuario.data_cadastro else None
             }
         return None
-    finally:
-        session.close()
-
-def adicionar_usuario(usuario_dict):
-    session = get_session()
-    try:
-        usuario = Usuario(**usuario_dict)
-        session.add(usuario)
-        session.commit()
-        return True
-    except Exception as e:
-        session.rollback()
-        return False
-    finally:
-        session.close()
-
-def atualizar_usuario(usuario_id, dados_atualizados):
-    session = get_session()
-    try:
-        usuario = session.query(Usuario).filter_by(id=usuario_id).first()
-        if usuario:
-            for key, value in dados_atualizados.items():
-                if hasattr(usuario, key):
-                    setattr(usuario, key, value)
-            session.commit()
-            return True
-        return False
-    except Exception as e:
-        session.rollback()
-        return False
     finally:
         session.close()
 
@@ -275,6 +190,7 @@ def get_solicitacoes():
             'observacoes': s.observacoes,
             'status': s.status,
             'usuario_id': s.usuario_id,
+            'leilao_encerrado': s.leilao_encerrado,
             'created_at': s.created_at.strftime('%d-%m-%Y %H:%M:%S') if s.created_at else None
         } for s in solicitacoes]
     finally:
@@ -296,6 +212,7 @@ def get_solicitacoes_por_usuario(usuario_id):
             'observacoes': s.observacoes,
             'status': s.status,
             'usuario_id': s.usuario_id,
+            'leilao_encerrado': s.leilao_encerrado,
             'created_at': s.created_at.strftime('%d-%m-%Y %H:%M:%S') if s.created_at else None
         } for s in solicitacoes]
     finally:
@@ -318,6 +235,7 @@ def get_solicitacao_por_id(solicitacao_id):
                 'observacoes': solicitacao.observacoes,
                 'status': solicitacao.status,
                 'usuario_id': solicitacao.usuario_id,
+                'leilao_encerrado': solicitacao.leilao_encerrado,
                 'created_at': solicitacao.created_at.strftime('%d-%m-%Y %H:%M:%S') if solicitacao.created_at else None
             }
         return None
@@ -357,10 +275,7 @@ def atualizar_solicitacao(solicitacao_id, dados_atualizados):
 def excluir_solicitacao(solicitacao_id):
     session = get_session()
     try:
-        # Primeiro excluir as cotações relacionadas
         session.query(Cotacao).filter_by(solicitacao_id=solicitacao_id).delete()
-        
-        # Depois excluir a solicitação
         solicitacao = session.query(Solicitacao).filter_by(id=solicitacao_id).first()
         if solicitacao:
             session.delete(solicitacao)
@@ -386,7 +301,8 @@ def get_cotacoes():
             'prazo_entrega': c.prazo_entrega,
             'observacoes': c.observacoes,
             'status': c.status,
-            'created_at': c.created_at.strftime('%d-%m-%Y %H:%M:%S') if c.created_at else None
+            'created_at': c.created_at.strftime('%d-%m-%Y %H:%M:%S') if c.created_at else None,
+            'updated_at': c.updated_at.strftime('%d-%m-%Y %H:%M:%S') if c.updated_at else None
         } for c in cotacoes]
     finally:
         session.close()
@@ -404,7 +320,8 @@ def get_cotacoes_por_transportadora(transportadora_id):
             'prazo_entrega': c.prazo_entrega,
             'observacoes': c.observacoes,
             'status': c.status,
-            'created_at': c.created_at.strftime('%d-%m-%Y %H:%M:%S') if c.created_at else None
+            'created_at': c.created_at.strftime('%d-%m-%Y %H:%M:%S') if c.created_at else None,
+            'updated_at': c.updated_at.strftime('%d-%m-%Y %H:%M:%S') if c.updated_at else None
         } for c in cotacoes]
     finally:
         session.close()
@@ -422,7 +339,8 @@ def get_cotacoes_por_solicitacao(solicitacao_id):
             'prazo_entrega': c.prazo_entrega,
             'observacoes': c.observacoes,
             'status': c.status,
-            'created_at': c.created_at.strftime('%d-%m-%Y %H:%M:%S') if c.created_at else None
+            'created_at': c.created_at.strftime('%d-%m-%Y %H:%M:%S') if c.created_at else None,
+            'updated_at': c.updated_at.strftime('%d-%m-%Y %H:%M:%S') if c.updated_at else None
         } for c in cotacoes]
     finally:
         session.close()
@@ -441,7 +359,8 @@ def get_cotacao_por_id(cotacao_id):
                 'prazo_entrega': cotacao.prazo_entrega,
                 'observacoes': cotacao.observacoes,
                 'status': cotacao.status,
-                'created_at': cotacao.created_at.strftime('%d-%m-Y %H:%M:%S') if cotacao.created_at else None
+                'created_at': cotacao.created_at.strftime('%d-%m-%Y %H:%M:%S') if cotacao.created_at else None,
+                'updated_at': cotacao.updated_at.strftime('%d-%m-%Y %H:%M:%S') if cotacao.updated_at else None
             }
         return None
     finally:
@@ -468,6 +387,7 @@ def atualizar_cotacao(cotacao_id, dados_atualizados):
             for key, value in dados_atualizados.items():
                 if hasattr(cotacao, key):
                     setattr(cotacao, key, value)
+            cotacao.updated_at = datetime.now()
             session.commit()
             return True
         return False
@@ -492,10 +412,17 @@ def excluir_cotacao(cotacao_id):
     finally:
         session.close()
 
-def adicionar_log_seguranca(log_dict):
+def adicionar_log_seguranca(usuario_id, acao, descricao, ip=None, user_agent=None):
     session = get_session()
     try:
-        log = LogSeguranca(**log_dict)
+        log = LogSeguranca(
+            usuario_id=usuario_id,
+            acao=acao,
+            descricao=descricao,
+            ip=ip or 'N/A',
+            user_agent=user_agent or 'N/A',
+            created_at=datetime.now()
+        )
         session.add(log)
         session.commit()
         return True
@@ -506,58 +433,216 @@ def adicionar_log_seguranca(log_dict):
         session.close()
 
 # =============================================
-# FUNÇÕES DE VALIDAÇÃO E SEGURANÇA
+# FUNÇÕES DE VALIDAÇÃO
 # =============================================
 
 def validar_cnpj(cnpj):
-    """Valida formato de CNPJ"""
     cnpj = re.sub(r'[^0-9]', '', str(cnpj))
     return len(cnpj) == 14
 
 def validar_email(email):
-    """Valida formato de e-mail"""
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
 def validar_telefone(telefone):
-    """Valida formato de telefone"""
     telefone = re.sub(r'[^0-9]', '', str(telefone))
     return len(telefone) >= 10 and len(telefone) <= 11
 
 def validar_senha_forte(senha):
-    """Valida força da senha"""
-    if len(senha) < 8:
-        return False, "A senha deve ter pelo menos 8 caracteres"
-    
+    if len(senha) < 10:
+        return False, "Mínimo 10 caracteres"
     if not any(c.isupper() for c in senha):
-        return False, "A senha deve ter pelo menos uma letra maiúscula"
-    
+        return False, "Pelo menos 1 letra maiúscula"
     if not any(c.islower() for c in senha):
-        return False, "A senha deve ter pelo menos uma letra minúscula"
-    
+        return False, "Pelo menos 1 letra minúscula"
     if not any(c.isdigit() for c in senha):
-        return False, "A senha deve ter pelo menos um número"
+        return False, "Pelo menos 1 número"
+    if not any(c in "!@#$%&*" for c in senha):
+        return False, "Pelo menos 1 caractere especial (!@#$%&*)"
+    return True, "OK"
+
+# =============================================
+# FUNÇÕES DE ESTATÍSTICAS
+# =============================================
+
+def get_estatisticas_solicitante(usuario_id):
+    solicitacoes = get_solicitacoes_por_usuario(usuario_id)
+    usuarios = get_usuarios()
+    cotacoes = get_cotacoes()
     
-    if not any(c in string.punctuation for c in senha):
-        return False, "A senha deve ter pelo menos um caractere especial"
+    solicitacoes_ativas = sum(1 for s in solicitacoes if s.get('status') == 'Aberta' and not s.get('leilao_encerrado'))
+    total_transportadoras = sum(1 for u in usuarios if u.get('tipo') == 'transportadora' and u.get('status') == 'Ativa')
     
-    return True, "Senha forte"
+    total_cotacoes = 0
+    for sol in solicitacoes:
+        cotacoes_solicitacao = get_cotacoes_por_solicitacao(sol['id'])
+        total_cotacoes += len(cotacoes_solicitacao)
+    
+    return {
+        'solicitacoes_ativas': solicitacoes_ativas,
+        'total_transportadoras': total_transportadoras,
+        'total_cotacoes': total_cotacoes
+    }
 
-def gerar_senha_temporaria():
-    """Gera senha temporária forte"""
-    caracteres = string.ascii_letters + string.digits + "!@#$%&*"
-    return ''.join(secrets.choice(caracteres) for _ in range(12))
+def get_estatisticas_transportadora(transportadora_id):
+    cotacoes = get_cotacoes_por_transportadora(transportadora_id)
+    
+    total_cotacoes = len(cotacoes)
+    cotacoes_aceitas = sum(1 for cot in cotacoes if cot.get('status') == 'Aceita')
+    cotacoes_pendentes = sum(1 for cot in cotacoes if cot.get('status') == 'Pendente')
+    
+    return {
+        'total_cotacoes': total_cotacoes,
+        'cotacoes_aceitas': cotacoes_aceitas,
+        'cotacoes_pendentes': cotacoes_pendentes
+    }
 
-def hash_senha(senha):
-    return hashlib.sha256(senha.encode()).hexdigest()
+# =============================================
+# FUNÇÕES DE LOGIN COM RATE LIMIT
+# =============================================
 
-# FUNÇÕES PARA DATAS EM PT-BR - CORRIGIDAS
+def verificar_rate_limit(ip):
+    session = get_session()
+    try:
+        tentativa = session.query(TentativaLogin).filter_by(ip=ip).first()
+        
+        if tentativa and tentativa.bloqueado_ate and tentativa.bloqueado_ate > datetime.now():
+            return False, f"Muitas tentativas. Tente novamente após {tentativa.bloqueado_ate.strftime('%H:%M')}"
+        
+        return True, "OK"
+    finally:
+        session.close()
+
+def registrar_tentativa_falha(ip):
+    session = get_session()
+    try:
+        tentativa = session.query(TentativaLogin).filter_by(ip=ip).first()
+        
+        if tentativa:
+            tentativa.tentativas += 1
+            if tentativa.tentativas >= MAX_TENTATIVAS_LOGIN:
+                tentativa.bloqueado_ate = datetime.now() + timedelta(minutes=BLOQUEIO_MINUTOS)
+        else:
+            tentativa = TentativaLogin(ip=ip, tentativas=1)
+            session.add(tentativa)
+        
+        session.commit()
+    finally:
+        session.close()
+
+def resetar_tentativas(ip):
+    session = get_session()
+    try:
+        tentativa = session.query(TentativaLogin).filter_by(ip=ip).first()
+        if tentativa:
+            session.delete(tentativa)
+            session.commit()
+    finally:
+        session.close()
+
+def verificar_login(razao_social, senha, ip):
+    rate_ok, msg = verificar_rate_limit(ip)
+    if not rate_ok:
+        return None, msg
+    
+    session = get_session()
+    try:
+        usuario = session.query(Usuario).filter(
+            func.lower(Usuario.razao_social) == func.lower(razao_social)
+        ).first()
+        
+        if not usuario:
+            registrar_tentativa_falha(ip)
+            return None, "Razão Social ou senha incorretos"
+        
+        if usuario.bloqueado_ate and usuario.bloqueado_ate > datetime.now():
+            return None, f"Usuário bloqueado até {usuario.bloqueado_ate.strftime('%H:%M')}"
+        
+        if not verificar_senha(senha, usuario.senha_hash):
+            usuario.tentativas_login += 1
+            if usuario.tentativas_login >= MAX_TENTATIVAS_LOGIN:
+                usuario.bloqueado_ate = datetime.now() + timedelta(minutes=BLOQUEIO_MINUTOS)
+            session.commit()
+            registrar_tentativa_falha(ip)
+            return None, "Razão Social ou senha incorretos"
+        
+        usuario.tentativas_login = 0
+        usuario.ultimo_login = datetime.now()
+        session.commit()
+        resetar_tentativas(ip)
+        
+        adicionar_log_seguranca(usuario.id, 'LOGIN_SUCESSO', 'Login realizado com sucesso', ip)
+        
+        return {
+            'id': usuario.id,
+            'razao_social': usuario.razao_social,
+            'tipo': usuario.tipo,
+            'status': usuario.status
+        }, None
+        
+    finally:
+        session.close()
+
+def cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, tipo='transportadora', ip=None):
+    if razao_social.lower() == "c3 engenharia":
+        return False, "Esta razão social é reservada"
+    
+    if not validar_senha_forte(senha)[0]:
+        return False, "Senha não atende aos requisitos mínimos"
+    
+    if not validar_cnpj(cnpj):
+        return False, "CNPJ inválido"
+    
+    if not validar_email(email):
+        return False, "E-mail inválido"
+    
+    if not validar_telefone(telefone):
+        return False, "Telefone inválido"
+    
+    session = get_session()
+    try:
+        if session.query(Usuario).filter(func.lower(Usuario.razao_social) == func.lower(razao_social)).first():
+            return False, "Razão Social já cadastrada"
+        
+        usuario_id = f"USER-{secrets.token_hex(8).upper()}"
+        cnpj_limpo = re.sub(r'[^0-9]', '', cnpj)
+        cnpj_hash = criptografar_dado(cnpj_limpo)
+        email_hash = criptografar_dado(email.lower())
+        
+        novo_usuario = Usuario(
+            id=usuario_id,
+            razao_social=razao_social,
+            cnpj_hash=cnpj_hash,
+            cnpj_ultimos4=cnpj_limpo[-4:] if len(cnpj_limpo) >= 4 else cnpj_limpo,
+            email_hash=email_hash,
+            telefone=telefone,
+            cidade=cidade,
+            senha_hash=hash_senha(senha),
+            tipo=tipo,
+            status='Ativa',
+            data_cadastro=datetime.now()
+        )
+        
+        session.add(novo_usuario)
+        session.commit()
+        
+        adicionar_log_seguranca(usuario_id, 'CADASTRO', f'Novo usuário: {razao_social}', ip)
+        return True, "Cadastro realizado com sucesso!"
+        
+    except IntegrityError:
+        session.rollback()
+        return False, "Dados já cadastrados"
+    finally:
+        session.close()
+
+# =============================================
+# FUNÇÕES DE DATA
+# =============================================
+
 def data_ptbr(data_str):
-    """Converte data do banco para formato PT-BR"""
     try:
         if data_str is None:
             return "Data não disponível"
-            
         if isinstance(data_str, str):
             try:
                 data_obj = datetime.strptime(data_str, '%d-%m-%Y %H:%M:%S')
@@ -568,21 +653,14 @@ def data_ptbr(data_str):
                     return str(data_str)
         else:
             data_obj = data_str
-        
         return data_obj.strftime('%d/%m/%Y às %H:%M')
-    except Exception as e:
+    except:
         return str(data_str)
 
-def data_agora_brasilia():
-    """Retorna data/hora atual no fuso do Brasil"""
-    return datetime.now()
-
 def tempo_desde(data_str):
-    """Calcula tempo passado desde uma data (em PT-BR)"""
     try:
         if data_str is None:
             return "tempo desconhecido"
-            
         if isinstance(data_str, str):
             try:
                 data_obj = datetime.strptime(data_str, '%d-%m-%Y %H:%M:%S')
@@ -616,625 +694,538 @@ def tempo_desde(data_str):
         return "tempo desconhecido"
 
 # =============================================
-# FUNÇÃO DE LOGIN SIMPLIFICADA
+# INICIALIZAÇÃO DO SISTEMA (ADMIN SEGURO)
 # =============================================
 
-def verificar_login(usuario_input, senha):
-    """Verifica login para qualquer usuário"""
-    if not usuario_input or not senha:
-        st.error("Preencha todos os campos")
-        return None
-    
-    print(f"\n" + "="*60)
-    print(f"🔍 INÍCIO DA VERIFICAÇÃO DE LOGIN")
-    print("="*60)
-    print(f"Usuário digitado: '{usuario_input}'")
-    print(f"Senha digitada: '{senha}'")
-    
+def inicializar_sistema():
+    session = get_session()
     try:
-        # 1. Calcular hash da senha digitada
-        senha_hash_digitada = hashlib.sha256(senha.encode()).hexdigest()
-        print(f"\n🔐 HASH DA SENHA DIGITADA: {senha_hash_digitada}")
+        admin = session.query(Usuario).filter(
+            func.lower(Usuario.razao_social) == "c3 engenharia"
+        ).first()
         
-        # 2. Conectar ao banco
-        conn = sqlite3.connect('c3_engenharia.db')
-        cursor = conn.cursor()
-        
-        # 3. BUSCAR USUÁRIO DE 3 FORMAS:
-        #   1. Por Razão Social exata
-        #   2. Por Razão Social (case-insensitive)
-        #   3. Por CNPJ (com ou sem formatação)
-        
-        usuario = None
-        
-        # Tentar por Razão Social exata
-        cursor.execute("SELECT * FROM usuarios WHERE razao_social = ?", (usuario_input,))
-        usuario = cursor.fetchone()
-        
-        if not usuario:
-            # Tentar por Razão Social case-insensitive
-            cursor.execute("SELECT * FROM usuarios WHERE LOWER(razao_social) = LOWER(?)", (usuario_input,))
-            usuario = cursor.fetchone()
-        
-        if not usuario:
-            # Tentar por CNPJ (limpar formatação)
-            cnpj_limpo = re.sub(r'[^0-9]', '', str(usuario_input))
-            if len(cnpj_limpo) == 14:  # CNPJ válido tem 14 números
-                # Buscar por CNPJ limpo no banco
-                cursor.execute("SELECT * FROM usuarios WHERE REPLACE(REPLACE(REPLACE(cnpj, '.', ''), '/', ''), '-', '') = ?", (cnpj_limpo,))
-                usuario = cursor.fetchone()
-        
-        if usuario:
-            print(f"\n✅ USUÁRIO ENCONTRADO!")
-            print(f"   ID: {usuario[0]}")
-            print(f"   Razão Social: '{usuario[1]}'")
-            print(f"   CNPJ: {usuario[2]}")
-            print(f"   Hash no banco: {usuario[6]}")
-            print(f"   Hash digitado: {senha_hash_digitada}")
-            print(f"   São iguais? {usuario[6] == senha_hash_digitada}")
+        if not admin:
+            senha_admin = secrets.token_urlsafe(12)
+            cnpj_limpo = "12345678000190"
             
-            if usuario[6] == senha_hash_digitada:
-                print("\n🎉 LOGIN BEM-SUCEDIDO!")
-                conn.close()
-                
-                return {
-                    'id': usuario[0],
-                    'razao_social': usuario[1],
-                    'cnpj': usuario[2],
-                    'email': usuario[3],
-                    'telefone': usuario[4],
-                    'cidade': usuario[5],
-                    'senha_hash': usuario[6],
-                    'tipo': usuario[7],
-                    'status': usuario[8],
-                    'data_cadastro': usuario[9]
-                }
-            else:
-                print("\n❌ ERRO: SENHA INCORRETA!")
-        else:
-            print(f"\n❌ ERRO: Usuário '{usuario_input}' não encontrado!")
-        
-        conn.close()
-        
+            admin_id = "ADMIN-001"
+            admin = Usuario(
+                id=admin_id,
+                razao_social="C3 Engenharia",
+                cnpj_hash=criptografar_dado(cnpj_limpo),
+                cnpj_ultimos4=cnpj_limpo[-4:],
+                email_hash=criptografar_dado("admin@c3engenharia.com.br"),
+                telefone="(19) 99999-9999",
+                cidade="Santa Bárbara D'Oeste - SP",
+                senha_hash=hash_senha(senha_admin),
+                tipo="solicitante",
+                status="Ativa",
+                data_cadastro=datetime.now()
+            )
+            
+            session.add(admin)
+            session.commit()
+            
+            with open('admin_credentials.txt', 'w') as f:
+                f.write("="*50 + "\n")
+                f.write("CREDENCIAIS DE ACESSO ADMIN\n")
+                f.write("="*50 + "\n\n")
+                f.write(f"Usuário: C3 Engenharia\n")
+                f.write(f"Senha: {senha_admin}\n\n")
+                f.write("IMPORTANTE: Altere a senha no primeiro acesso!\n")
+                f.write("="*50 + "\n")
+            
+            print(f"✅ Admin criado. Credenciais salvas em admin_credentials.txt")
     except Exception as e:
-        print(f"\n❌ ERRO NA CONEXÃO: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    print("="*60)
-    return None
-
-def verificar_usuario_protegido(cnpj, razao_social):
-    """Verifica se está tentando cadastrar com dados do usuário mestre"""
-    # CNPJ do usuário mestre
-    cnpj_mestre = "12.345.678/0001-90"
-    
-    # Limpar CNPJs para comparação
-    cnpj_limpo_tentativa = re.sub(r'[^0-9]', '', str(cnpj))
-    cnpj_limpo_mestre = re.sub(r'[^0-9]', '', str(cnpj_mestre))
-    
-    # Razão Social do usuário mestre
-    razao_social_mestre = "C3 Engenharia"
-    
-    # Verificações
-    if cnpj_limpo_tentativa == cnpj_limpo_mestre:
-        return False, "CNPJ reservado para uso interno do sistema"
-    
-    if razao_social.lower() == razao_social_mestre.lower():
-        return False, "Razão Social reservada para uso interno do sistema"
-    
-    return True, "OK"
-
-def cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, tipo='transportadora'):
-    try:
-        # 1. VERIFICAÇÃO DE SEGURANÇA - Usuário mestre
-        valido, mensagem = verificar_usuario_protegido(cnpj, razao_social)
-        if not valido:
-            st.error(f"Erro de segurança: {mensagem}")
-            return False
-        
-        # 2. VERIFICAR SE JÁ EXISTE
-        session = get_session()
-        
-        # Verificar se CNPJ já existe
-        usuario_existente = session.query(Usuario).filter_by(cnpj=cnpj).first()
-        if usuario_existente:
-            st.error("CNPJ já cadastrado no sistema")
-            session.close()
-            return False
-        
-        # Verificar se Razão Social já existe
-        usuario_existente_nome = session.query(Usuario).filter_by(razao_social=razao_social).first()
-        if usuario_existente_nome:
-            st.error("Razão Social já cadastrada no sistema")
-            session.close()
-            return False
-        
-        # 3. CRIAR USUÁRIO
-        usuario_id = f"USER-{uuid.uuid4().hex[:8].upper()}"
-        senha_hash = hash_senha(senha)
-        
-        usuario_dict = {
-            'id': usuario_id,
-            'razao_social': razao_social,
-            'cnpj': cnpj,
-            'email': email,
-            'telefone': telefone,
-            'cidade': cidade,
-            'senha_hash': senha_hash,
-            'tipo': tipo,
-            'status': 'Ativa',
-            'data_cadastro': datetime.now()
-        }
-        
-        success = adicionar_usuario(usuario_dict)
-        
-        if success:
-            # LOG DE SEGURANÇA
-            adicionar_log_seguranca({
-                'usuario_id': 'SISTEMA',
-                'acao': 'CADASTRO_USUARIO',
-                'descricao': f'Novo usuário cadastrado: {razao_social} ({cnpj})',
-                'ip': 'N/A',
-                'user_agent': 'N/A',
-                'created_at': datetime.now()
-            })
-            
-            # DEBUG NO CONSOLE
-            print(f"\n✅ NOVO USUÁRIO CADASTRADO:")
-            print(f"   ID: {usuario_id}")
-            print(f"   Razão Social: {razao_social}")
-            print(f"   CNPJ: {cnpj}")
-            print(f"   Email: {email}")
-            print(f"   Senha: {senha}")
-            print(f"   Hash: {senha_hash}")
-            print(f"   Tipo: {tipo}")
-            
-            return True
-        
+        print(f"⚠️ Erro na inicialização: {e}")
+    finally:
         session.close()
-        return False
-        
-    except Exception as e:
-        st.error(f"Erro ao cadastrar usuário: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-# =============================================
-# FUNÇÕES DO SISTEMA
-# =============================================
-
-def get_estatisticas_solicitante(usuario_id):
-    solicitacoes = get_solicitacoes_por_usuario(usuario_id)
-    usuarios = get_usuarios()
-    cotacoes = get_cotacoes()
-    
-    hoje = datetime.now().strftime('%d-%m-%Y')
-    
-    solicitacoes_ativas = sum(1 for s in solicitacoes if s.get('status') == 'Aberta')
-    total_transportadoras = sum(1 for u in usuarios if u.get('tipo') == 'transportadora' and u.get('status') == 'Ativa')
-    
-    # Total de cotações das minhas solicitações
-    total_cotacoes = 0
-    for sol in solicitacoes:
-        cotacoes_solicitacao = get_cotacoes_por_solicitacao(sol['id'])
-        total_cotacoes += len(cotacoes_solicitacao)
-    
-    # Cotações hoje
-    cotacoes_hoje = 0
-    for cot in cotacoes:
-        if cot.get('created_at', '').startswith(hoje):
-            # Verificar se a solicitação pertence ao usuário
-            solicitacao = get_solicitacao_por_id(cot.get('solicitacao_id'))
-            if solicitacao and solicitacao.get('usuario_id') == usuario_id:
-                cotacoes_hoje += 1
-    
-    return {
-        'solicitacoes_ativas': solicitacoes_ativas,
-        'total_transportadoras': total_transportadoras,
-        'total_cotacoes': total_cotacoes,
-        'cotacoes_hoje': cotacoes_hoje
-    }
-
-def get_estatisticas_transportadora(transportadora_id):
-    cotacoes = get_cotacoes_por_transportadora(transportadora_id)
-    
-    total_cotacoes = len(cotacoes)
-    cotacoes_aceitas = sum(1 for cot in cotacoes if cot.get('status') == 'Aceita')
-    cotacoes_pendentes = sum(1 for cot in cotacoes if cot.get('status') == 'Pendente')
-    cotacoes_recusadas = sum(1 for cot in cotacoes if cot.get('status') == 'Recusada')
-    
-    return {
-        'total_cotacoes': total_cotacoes,
-        'cotacoes_aceitas': cotacoes_aceitas,
-        'cotacoes_pendentes': cotacoes_pendentes,
-        'cotacoes_recusadas': cotacoes_recusadas
-    }
 
 # =============================================
 # CONFIGURAÇÃO DO STREAMLIT
 # =============================================
-st.set_page_config(page_title="Sistema de Cotações C3 Engenharia", page_icon="🌐", layout="wide")
+st.set_page_config(
+    page_title="C3 Freights - Sistema de Leilão de Fretes",
+    page_icon="🏆",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# CSS PROFISSIONAL E SOBRIO
+# CSS COMPLETO (mantido do código anterior)
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
     
-    * {
-        font-family: 'Inter', sans-serif;
+    * { font-family: 'Inter', sans-serif; margin: 0; padding: 0; box-sizing: border-box; }
+    
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --border-color: #334155;
+            --card-bg: #1e293b;
+            --hover-bg: #334155;
+        }
     }
     
-    .main-header { 
-        font-size: 1.8rem; 
-        color: #1a365d; 
-        text-align: center; 
-        margin-bottom: 2rem; 
-        font-weight: 600;
-        border-bottom: 2px solid #2e86ab;
-        padding-bottom: 1rem;
+    @media (prefers-color-scheme: light) {
+        :root {
+            --bg-primary: #f8fafc;
+            --bg-secondary: #ffffff;
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --border-color: #e2e8f0;
+            --card-bg: #ffffff;
+            --hover-bg: #f1f5f9;
+        }
     }
-    .metric-card { 
-        background: #f8f9fa; 
-        color: #2d3748; 
-        padding: 1.5rem; 
-        border-radius: 8px; 
-        text-align: center;
-        border-left: 4px solid #2e86ab;
-        margin-bottom: 1rem;
-        font-weight: 500;
+    
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
     }
-    .danger-zone { 
-        background-color: #fff5f5; 
-        padding: 1rem; 
-        border-radius: 6px; 
-        border: 1px solid #fed7d7; 
+    
+    @keyframes slideIn {
+        from { transform: translateX(-100%); }
+        to { transform: translateX(0); }
     }
-    .card-profissional {
-        background: white;
+    
+    .main-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 1rem;
+        margin-bottom: 2rem;
+        animation: fadeIn 0.5s ease;
+    }
+    
+    .main-header h1 { color: white; font-size: 2rem; font-weight: 700; margin: 0; }
+    .main-header p { color: rgba(255,255,255,0.9); margin-top: 0.5rem; }
+    
+    .metric-card {
+        background: var(--card-bg);
+        border-radius: 1rem;
         padding: 1.5rem;
-        border-radius: 6px;
-        border: 1px solid #e2e8f0;
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+        transition: all 0.3s ease;
+        border: 1px solid var(--border-color);
+        animation: fadeIn 0.5s ease;
+        text-align: center;
+    }
+    
+    .metric-card:hover { transform: translateY(-4px); box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); }
+    .metric-value { font-size: 2.5rem; font-weight: 800; color: #667eea; margin: 0.5rem 0; }
+    .metric-label { color: var(--text-secondary); font-size: 0.875rem; font-weight: 500; text-transform: uppercase; }
+    
+    .frete-card {
+        background: var(--card-bg);
+        border-radius: 1rem;
+        padding: 1.5rem;
         margin-bottom: 1rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        border: 1px solid var(--border-color);
+        transition: all 0.3s ease;
+        animation: fadeIn 0.5s ease;
     }
-    .stButton button {
-        font-weight: 500;
-        border-radius: 6px;
+    
+    .frete-card:hover { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); transform: translateX(4px); }
+    
+    .badge-success { background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+    .badge-warning { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+    .badge-danger { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+    .badge-info { background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+    
+    .stButton button { transition: all 0.3s ease; border-radius: 0.5rem; font-weight: 600; }
+    .stButton button:hover { transform: translateY(-2px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+    
+    .user-avatar {
+        width: 48px;
+        height: 48px;
+        background: linear-gradient(135deg, #667eea, #764ba2);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: 700;
+        font-size: 1.25rem;
+        transition: all 0.3s ease;
     }
-    .success-status {
-        color: #10b981;
-        font-weight: 600;
-    }
-    .pending-status {
-        color: #f59e0b;
-        font-weight: 600;
-    }
-    .rejected-status {
-        color: #ef4444;
-        font-weight: 600;
-    }
-    .security-warning {
-        background-color: #fffbeb;
-        border: 1px solid #f59e0b;
-        border-radius: 6px;
+    
+    .user-avatar:hover { transform: scale(1.1); }
+    
+    .toast-notification {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: var(--card-bg);
+        border-left: 4px solid;
+        border-radius: 0.5rem;
         padding: 1rem;
-        margin: 1rem 0;
+        box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
+        z-index: 1000;
+        animation: slideIn 0.3s ease;
+        max-width: 400px;
     }
-    .blue-emoji {
-        color: #2e86ab;
-        font-weight: 600;
-    }
+    
+    .toast-success { border-left-color: #10b981; }
+    .toast-error { border-left-color: #ef4444; }
+    .toast-warning { border-left-color: #f59e0b; }
+    .toast-info { border-left-color: #3b82f6; }
 </style>
 """, unsafe_allow_html=True)
 
 # =============================================
+# FUNÇÕES DE NOTIFICAÇÃO
+# =============================================
+
+def show_toast(message, type='success'):
+    st.markdown(f"""
+    <div class="toast-notification toast-{type}">
+        <strong>{'✓' if type == 'success' else '⚠' if type == 'warning' else '✗' if type == 'error' else 'ℹ'}</strong>
+        {message}
+    </div>
+    <script>
+        setTimeout(() => {{
+            const toast = document.querySelector('.toast-notification');
+            if(toast) toast.remove();
+        }}, 3000);
+    </script>
+    """, unsafe_allow_html=True)
+
+# =============================================
+# INICIALIZAÇÃO
+# =============================================
+inicializar_sistema()
+
+# =============================================
 # SISTEMA DE LOGIN
 # =============================================
-
-def mostrar_login():
-    st.markdown('<div class="main-header">SISTEMA DE COTAÇÕES - C3 ENGENHARIA</div>', unsafe_allow_html=True)
-    
-    tab1, tab2 = st.tabs(["Login", "Cadastro Transportadoras"])
-    
-    with tab1:
-        st.markdown("### Acesso ao Sistema")
-        
-        # AVISO DE SEGURANÇA
-        st.markdown("""
-        <div class="security-warning">
-            <strong>AVISO DE SEGURANÇA:</strong><br>
-            • Não compartilhe suas credenciais<br>
-            • Use senhas fortes e únicas<br>
-            • Desconecte-se ao terminar
-        </div>
-        """, unsafe_allow_html=True)
-        
-        with st.form("login_form"):
-            usuario_input = st.text_input("Usuário (CNPJ ou Razão Social)", placeholder="Digite 'C3 Engenharia'")
-            senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
-            submit_login = st.form_submit_button("Entrar no Sistema")
-            
-            if submit_login:
-                if usuario_input and senha:
-                    with st.spinner("Verificando credenciais..."):
-                        usuario = verificar_login(usuario_input, senha)
-                        if usuario:
-                            st.session_state.logged_in = True
-                            st.session_state.usuario_id = usuario['id']
-                            st.session_state.razao_social = usuario['razao_social']
-                            st.session_state.tipo_usuario = usuario['tipo']
-                            st.success(f"Bem-vindo, {usuario['razao_social']}!")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("Usuário ou senha incorretos. Tente: Usuário: 'C3 Engenharia', Senha: '462462Ca_'")
-                else:
-                    st.error("Preencha todos os campos")
-    
-    with tab2:
-        st.markdown("### Cadastro de Transportadoras")
-        st.warning("ÁREA EXCLUSIVA PARA TRANSPORTADORAS")
-        st.info("Solicitantes: Use o login da C3 Engenharia")
-        
-        with st.form("cadastro_form"):
-            razao_social = st.text_input("Razão Social*", max_chars=100)
-            cnpj = st.text_input("CNPJ*", placeholder="00.000.000/0000-00", max_chars=18)
-            email = st.text_input("E-mail*", max_chars=100)
-            telefone = st.text_input("Telefone*", placeholder="(11) 99999-9999", max_chars=15)
-            cidade = st.text_input("Cidade/UF*", placeholder="São Paulo - SP", max_chars=50)
-            senha = st.text_input("Senha*", type="password", 
-                                 help="Mínimo 8 caracteres, com letras maiúsculas, minúsculas, números e símbolos")
-            confirmar_senha = st.text_input("Confirmar Senha*", type="password")
-            
-            submit_cadastro = st.form_submit_button("Cadastrar Transportadora")
-            
-            if submit_cadastro:
-                # VALIDAÇÕES DE SEGURANÇA
-                erros = []
-                
-                if not all([razao_social, cnpj, email, telefone, cidade, senha, confirmar_senha]):
-                    erros.append("Preencha todos os campos")
-                
-                if not validar_cnpj(cnpj):
-                    erros.append("CNPJ inválido")
-                
-                if not validar_email(email):
-                    erros.append("E-mail inválido")
-                
-                if not validar_telefone(telefone):
-                    erros.append("Telefone inválido")
-                
-                senha_valida, msg_senha = validar_senha_forte(senha)
-                if not senha_valida:
-                    erros.append(msg_senha)
-                    
-                if razao_social.lower() == "c3 engenharia":
-                    erros.append("Esta razão social é reservada para uso interno")
-                
-                if senha != confirmar_senha:
-                    erros.append("As senhas não coincidem")
-                
-                if erros:
-                    for erro in erros:
-                        st.error(erro)
-                else:
-                    if cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, 'transportadora'):
-                        st.success("Transportadora cadastrada com sucesso! ✅")
-                        st.info("Acesso liberado imediatamente para cadastro de cotações.")
-                    else:
-                        st.error("CNPJ já cadastrado no sistema")
-
-# =============================================
-# VERIFICAÇÕES DE SEGURANÇA
-# =============================================
-
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    mostrar_login()
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown("""
+        <div class="main-header" style="text-align: center;">
+            <h1>🏆 C3 FREIGHTS</h1>
+            <p>Sistema de Leilão de Fretes</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        tab1, tab2 = st.tabs(["🔐 Login", "📝 Cadastro"])
+        
+        with tab1:
+            with st.form("login_form"):
+                razao_social = st.text_input("Razão Social", placeholder="Digite sua razão social")
+                senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
+                
+                submitted = st.form_submit_button("Entrar no Sistema", use_container_width=True)
+                
+                if submitted:
+                    if not razao_social or not senha:
+                        show_toast("Preencha todos os campos", "error")
+                    else:
+                        ip = st.session_state.get('ip', '127.0.0.1')
+                        
+                        with st.spinner("Verificando credenciais..."):
+                            usuario, erro = verificar_login(razao_social, senha, ip)
+                            
+                            if usuario:
+                                st.session_state.logged_in = True
+                                st.session_state.usuario_id = usuario['id']
+                                st.session_state.razao_social = usuario['razao_social']
+                                st.session_state.tipo_usuario = usuario['tipo']
+                                
+                                show_toast(f"Bem-vindo, {usuario['razao_social']}!", "success")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                show_toast(erro or "Credenciais inválidas", "error")
+        
+        with tab2:
+            with st.form("cadastro_form"):
+                razao_social = st.text_input("Razão Social*", max_chars=100)
+                cnpj = st.text_input("CNPJ*", placeholder="00.000.000/0000-00", max_chars=18)
+                email = st.text_input("E-mail*", max_chars=100)
+                telefone = st.text_input("Telefone*", placeholder="(11) 99999-9999", max_chars=15)
+                cidade = st.text_input("Cidade/UF*", max_chars=50)
+                senha = st.text_input("Senha*", type="password")
+                confirmar = st.text_input("Confirmar Senha*", type="password")
+                
+                st.caption("🔒 Requisitos: mínimo 10 caracteres, 1 maiúscula, 1 minúscula, 1 número, 1 caractere especial (!@#$%&*)")
+                
+                if st.form_submit_button("Cadastrar", use_container_width=True):
+                    if not all([razao_social, cnpj, email, telefone, cidade, senha]):
+                        show_toast("Preencha todos os campos", "error")
+                    elif senha != confirmar:
+                        show_toast("As senhas não coincidem", "error")
+                    else:
+                        with st.spinner("Cadastrando..."):
+                            sucesso, msg = cadastrar_usuario(
+                                razao_social, cnpj, email, telefone, cidade, senha,
+                                tipo='transportadora', ip=st.session_state.get('ip', '127.0.0.1')
+                            )
+                            
+                            if sucesso:
+                                show_toast(msg, "success")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                show_toast(msg, "error")
+    
     st.stop()
 
 # =============================================
-# SISTEMA PRINCIPAL (APÓS LOGIN)
+# SISTEMA PRINCIPAL
 # =============================================
 
-# CABEÇALHO COM BOTÃO DE LOGOUT
-col1, col2 = st.columns([3, 1])
+# Header
+col1, col2, col3 = st.columns([2, 1, 1])
 with col1:
     st.markdown(f"""
     <div class="main-header">
-        <span class="blue-emoji">🌐</span> SISTEMA DE COTAÇÕES | {st.session_state.razao_social}
+        <h1>🏆 C3 FREIGHTS</h1>
+        <p>Sistema de Leilão de Fretes - {st.session_state.razao_social}</p>
     </div>
     """, unsafe_allow_html=True)
-with col2:
-    if st.button("Sair do Sistema", use_container_width=True):
-        adicionar_log_seguranca({
-            'usuario_id': st.session_state.usuario_id,
-            'acao': 'LOGOUT',
-            'descricao': 'Usuário desconectado',
-            'ip': 'N/A',
-            'user_agent': 'N/A',
-            'created_at': datetime.now()
-        })
+
+with col3:
+    st.markdown(f"""
+    <div style="display: flex; justify-content: flex-end; align-items: center; gap: 1rem;">
+        <div class="user-avatar">
+            {st.session_state.razao_social[:2].upper()}
+        </div>
+        <div>
+            <strong>{st.session_state.razao_social[:30]}</strong><br>
+            <small style="color: var(--text-secondary);">{'Solicitante' if st.session_state.tipo_usuario == 'solicitante' else 'Transportadora'}</small>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if st.button("🚪 Sair", use_container_width=True):
+        adicionar_log_seguranca(
+            st.session_state.usuario_id,
+            'LOGOUT',
+            'Usuário desconectado',
+            st.session_state.get('ip', 'N/A')
+        )
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
 
-# MENU DINÂMICO BASEADO NO TIPO DE USUÁRIO
+# Menu
+st.sidebar.markdown("### 📋 Navegação")
+
 if st.session_state.tipo_usuario == 'solicitante':
     menu_options = [
-        "Dashboard", 
-        "Nova Solicitação", 
-        "Gerenciar Solicitações",
-        "Cotações Recebidas",
-        "Transportadoras Cadastradas",
-        "Backup de Dados",
-        "Meu Perfil"
+        "📊 Dashboard",
+        "➕ Nova Solicitação",
+        "📋 Gerenciar Solicitações",
+        "💰 Cotações Recebidas",
+        "🏆 Encerrar Leilão",
+        "🚛 Transportadoras Cadastradas",
+        "📁 Backup de Dados",
+        "⚙️ Meu Perfil"
     ]
 else:
     menu_options = [
-        "Dashboard", 
-        "Fretes Disponíveis", 
-        "Minhas Cotações",
-        "Meu Perfil"
+        "📊 Dashboard",
+        "🚚 Fretes Disponíveis",
+        "📝 Minhas Cotações",
+        "⚙️ Meu Perfil"
     ]
 
-# SELECTBOX PARA MENU
-col1, col2 = st.columns([3, 1])
-with col1:
-    menu = st.selectbox("Navegação", menu_options, label_visibility="collapsed")
-with col2:
-    st.markdown(f"**Tipo:** {'Solicitante' if st.session_state.tipo_usuario == 'solicitante' else 'Transportadora'}")
+menu = st.sidebar.selectbox("Menu", menu_options, label_visibility="collapsed")
 
-st.markdown("---")
+# Sidebar info
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔒 Dicas de Segurança")
+st.sidebar.info("""
+• Nunca compartilhe sua senha
+• Troque sua senha periodicamente
+• Sempre faça logout ao sair
+• Não acesse em computadores públicos
+""")
+
+st.sidebar.markdown("---")
+st.sidebar.caption(f"🔐 Sessão segura | {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
 # =============================================
-# DASHBOARD DINÂMICO
+# DASHBOARD
 # =============================================
-
-if menu == "Dashboard":
+if menu == "📊 Dashboard":
+    st.markdown("### 📊 Dashboard")
     
     if st.session_state.tipo_usuario == 'solicitante':
-        with st.spinner("Atualizando dados..."):
-            time.sleep(0.5)
+        with st.spinner("Carregando dados..."):
             stats = get_estatisticas_solicitante(st.session_state.usuario_id)
         
-        st.markdown(f"### Bem-vindo, {st.session_state.razao_social}!")
+        col1, col2, col3 = st.columns(3)
         
-        # MÉTRICAS ATUALIZADAS
-        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.markdown(f'<div class="metric-card">Solicitações Ativas<br><h3>{stats["solicitacoes_ativas"]}</h3></div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Solicitações Ativas</div>
+                <div class="metric-value">{stats['solicitacoes_ativas']}</div>
+                <small>Aguardando cotações</small>
+            </div>
+            """, unsafe_allow_html=True)
+        
         with col2:
-            st.markdown(f'<div class="metric-card">Transportadoras<br><h3>{stats["total_transportadoras"]}</h3></div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Transportadoras</div>
+                <div class="metric-value">{stats['total_transportadoras']}</div>
+                <small>Ativas no sistema</small>
+            </div>
+            """, unsafe_allow_html=True)
+        
         with col3:
-            st.markdown(f'<div class="metric-card">Cotações Recebidas<br><h3>{stats["total_cotacoes"]}</h3></div>', unsafe_allow_html=True)
-        with col4:
-            st.markdown(f'<div class="metric-card">Cotações Hoje<br><h3>{stats["cotacoes_hoje"]}</h3></div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Cotações Recebidas</div>
+                <div class="metric-value">{stats['total_cotacoes']}</div>
+                <small>Total recebidas</small>
+            </div>
+            """, unsafe_allow_html=True)
         
-        if st.button("Atualizar Dados"):
-            st.rerun()
+        # Atividade recente
+        st.markdown("### 📈 Atividade Recente")
+        solicitacoes = get_solicitacoes_por_usuario(st.session_state.usuario_id)
         
-        st.markdown("---")
-        
-        # ATIVIDADE RECENTE
-        st.markdown("### Atividade Recente")
-        
-        try:
-            solicitacoes = get_solicitacoes_por_usuario(st.session_state.usuario_id)
-            ultimas_cotacoes = []
-            
-            for sol in solicitacoes[:5]:  # Últimas 5 solicitações
-                cotacoes_sol = get_cotacoes_por_solicitacao(sol['id'])
-                for cot in cotacoes_sol[:2]:  # Últimas 2 cotações por solicitação
-                    ultimas_cotacoes.append({
-                        'id': cot['id'],
-                        'transportadora_nome': cot['transportadora_nome'],
-                        'valor_frete': cot['valor_frete'],
-                        'prazo_entrega': cot['prazo_entrega'],
-                        'created_at': cot['created_at'],
-                        'local_coleta': sol['local_coleta'],
-                        'local_entrega': sol['local_entrega']
-                    })
-            
-            # Ordenar por data mais recente
-            ultimas_cotacoes.sort(key=lambda x: x['created_at'], reverse=True)
-            ultimas_cotacoes = ultimas_cotacoes[:5]
-            
-            if ultimas_cotacoes:
-                st.markdown("#### Últimas Cotações Recebidas")
-                for cot in ultimas_cotacoes:
-                    tempo = tempo_desde(cot['created_at'])
-                    valor_frete = float(cot['valor_frete']) if cot['valor_frete'] else 0
-                    st.info(f"**{cot['transportadora_nome']}** - R$ {valor_frete:,.2f} - {cot['local_coleta']} → {cot['local_entrega']} - {tempo}")
-            else:
-                st.info("Nenhuma cotação recebida ainda")
-        except Exception as e:
-            st.info("Nenhuma cotação recebida ainda")
-            
+        if solicitacoes:
+            for sol in solicitacoes[:5]:
+                cotacoes = get_cotacoes_por_solicitacao(sol['id'])
+                with st.expander(f"{sol['id']} - {sol['local_coleta']} → {sol['local_entrega']}"):
+                    st.write(f"**Material:** {sol['material']}")
+                    st.write(f"**Status:** {sol['status']}")
+                    st.write(f"**Cotações:** {len(cotacoes)}")
+                    st.write(f"**Criada em:** {data_ptbr(sol['created_at'])}")
+        else:
+            st.info("Nenhuma solicitação criada ainda")
+    
     else:
-        # Dashboard para Transportadora
-        st.markdown(f"### Dashboard - {st.session_state.razao_social}")
-        
+        # Dashboard Transportadora
         stats = get_estatisticas_transportadora(st.session_state.usuario_id)
         
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3 = st.columns(3)
+        
         with col1:
-            st.markdown(f'<div class="metric-card">Cotações Enviadas<br><h3>{stats["total_cotacoes"]}</h3></div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Cotações Enviadas</div>
+                <div class="metric-value">{stats['total_cotacoes']}</div>
+                <small>Total de participações</small>
+            </div>
+            """, unsafe_allow_html=True)
+        
         with col2:
-            st.markdown(f'<div class="metric-card">Cotações Aceitas<br><h3>{stats["cotacoes_aceitas"]}</h3></div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Cotações Aceitas</div>
+                <div class="metric-value">{stats['cotacoes_aceitas']}</div>
+                <small>Fretes ganhos</small>
+            </div>
+            """, unsafe_allow_html=True)
+        
         with col3:
-            st.markdown(f'<div class="metric-card">Cotações Pendentes<br><h3>{stats["cotacoes_pendentes"]}</h3></div>', unsafe_allow_html=True)
-        with col4:
-            taxa_sucesso = (stats["cotacoes_aceitas"] / stats["total_cotacoes"] * 100) if stats["total_cotacoes"] > 0 else 0
-            st.markdown(f'<div class="metric-card">Taxa de Sucesso<br><h3>{taxa_sucesso:.1f}%</h3></div>', unsafe_allow_html=True)
+            taxa = (stats['cotacoes_aceitas'] / stats['total_cotacoes'] * 100) if stats['total_cotacoes'] > 0 else 0
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Taxa de Sucesso</div>
+                <div class="metric-value">{taxa:.1f}%</div>
+                <small>Cotações aceitas</small>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Minhas cotações recentes
+        st.markdown("### 📝 Minhas Últimas Cotações")
+        minhas_cotacoes = get_cotacoes_por_transportadora(st.session_state.usuario_id)
+        
+        if minhas_cotacoes:
+            for cot in minhas_cotacoes[:5]:
+                solicitacao = get_solicitacao_por_id(cot['solicitacao_id'])
+                if solicitacao:
+                    with st.expander(f"{cot['id']} - R$ {cot['valor_frete']:,.2f}"):
+                        st.write(f"**Rota:** {solicitacao['local_coleta']} → {solicitacao['local_entrega']}")
+                        st.write(f"**Status:** {cot['status']}")
+                        st.write(f"**Enviada em:** {data_ptbr(cot['created_at'])}")
+        else:
+            st.info("Você ainda não enviou nenhuma cotação")
 
 # =============================================
-# NOVA SOLICITAÇÃO (APENAS SOLICITANTE)
+# NOVA SOLICITAÇÃO
 # =============================================
-elif menu == "Nova Solicitação" and st.session_state.tipo_usuario == 'solicitante':
-    st.markdown("### Nova Solicitação de Frete")
+elif menu == "➕ Nova Solicitação" and st.session_state.tipo_usuario == 'solicitante':
+    st.markdown("### ➕ Nova Solicitação de Frete")
     
     with st.form("nova_solicitacao"):
         col1, col2 = st.columns(2)
         
         with col1:
-            local_coleta = st.text_input("Local de Coleta*", placeholder="Ex: Piracicaba - SP")
-            material = st.selectbox("Material*", ["Eletrônicos", "Móveis", "Alimentos", "Químicos", "Automotivo", "Metais", "Plásticos", "Papel"])
-            data_coleta = st.date_input("Data Coleta*", min_value=datetime.today())
+            local_coleta = st.text_input("📍 Local de Coleta*", placeholder="Ex: Piracicaba - SP")
+            material = st.selectbox("📦 Material*", [
+                "Eletrônicos", "Móveis", "Alimentos", "Químicos",
+                "Automotivo", "Metais", "Plásticos", "Papel"
+            ])
+            data_coleta = st.date_input("📅 Data Coleta*", min_value=datetime.today())
             
         with col2:
-            local_entrega = st.text_input("Local de Entrega*", placeholder="Ex: Salvador - BA")
-            valor_carga = st.number_input("Valor da Carga (R$)*", min_value=0.0, format="%.2f")
-            data_entrega = st.date_input("Data Entrega*", min_value=datetime.today())
+            local_entrega = st.text_input("🎯 Local de Entrega*", placeholder="Ex: Salvador - BA")
+            valor_carga = st.number_input("💰 Valor da Carga (R$)*", min_value=0.0, format="%.2f")
+            data_entrega = st.date_input("📅 Data Entrega*", min_value=datetime.today())
         
-        tomador = st.text_input("Tomador*", placeholder="Cliente final", value="C3 Engenharia")
-        observacoes = st.text_area("Observações", placeholder="Informações adicionais sobre a carga...")
+        tomador = st.text_input("🏢 Tomador*", placeholder="Cliente final", value="C3 Engenharia")
+        observacoes = st.text_area("📝 Observações", placeholder="Informações adicionais sobre a carga...")
         
-        submitted = st.form_submit_button("Publicar Solicitação")
+        submitted = st.form_submit_button("🚀 Publicar Frete", use_container_width=True)
         
         if submitted:
-            if all([local_coleta, local_entrega, material, tomador]):
-                solicitacao_id = f"FRT-{data_agora_brasilia().strftime('%Y%m%d-%H%M%S')}"
-                
-                solicitacao_dict = {
-                    'id': solicitacao_id,
-                    'local_coleta': local_coleta,
-                    'local_entrega': local_entrega,
-                    'material': material,
-                    'valor_carga': valor_carga,
-                    'data_coleta': data_coleta.strftime('%Y-%m-%d'),
-                    'data_entrega': data_entrega.strftime('%Y-%m-%d'),
-                    'tomador': tomador,
-                    'observacoes': observacoes,
-                    'status': 'Aberta',
-                    'usuario_id': st.session_state.usuario_id,
-                    'created_at': datetime.now()
-                }
-                
-                if adicionar_solicitacao(solicitacao_dict):
-                    st.success(f"Solicitação {solicitacao_id} publicada com sucesso!")
-                    adicionar_log_seguranca({
-                        'usuario_id': st.session_state.usuario_id,
-                        'acao': 'NOVA_SOLICITACAO',
-                        'descricao': f'Solicitação: {solicitacao_id}',
-                        'ip': 'N/A',
-                        'user_agent': 'N/A',
-                        'created_at': datetime.now()
-                    })
-                else:
-                    st.error("Erro ao publicar solicitação")
+            if not all([local_coleta, local_entrega, material, tomador]):
+                show_toast("Preencha todos os campos obrigatórios", "error")
+            elif data_coleta > data_entrega:
+                show_toast("Data de coleta não pode ser maior que data de entrega", "error")
             else:
-                st.error("Preencha todos os campos obrigatórios")
+                with st.spinner("Publicando frete..."):
+                    solicitacao_id = f"FRT-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                    
+                    solicitacao_dict = {
+                        'id': solicitacao_id,
+                        'local_coleta': local_coleta,
+                        'local_entrega': local_entrega,
+                        'material': material,
+                        'valor_carga': valor_carga,
+                        'data_coleta': data_coleta.strftime('%Y-%m-%d'),
+                        'data_entrega': data_entrega.strftime('%Y-%m-%d'),
+                        'tomador': tomador,
+                        'observacoes': observacoes,
+                        'status': 'Aberta',
+                        'usuario_id': st.session_state.usuario_id,
+                        'leilao_encerrado': False,
+                        'created_at': datetime.now()
+                    }
+                    
+                    if adicionar_solicitacao(solicitacao_dict):
+                        show_toast(f"Frete {solicitacao_id} publicado com sucesso!", "success")
+                        adicionar_log_seguranca(
+                            st.session_state.usuario_id,
+                            'NOVA_SOLICITACAO',
+                            f'Frete: {local_coleta} → {local_entrega}',
+                            st.session_state.get('ip', 'N/A')
+                        )
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        show_toast("Erro ao publicar frete", "error")
 
 # =============================================
-# GERENCIAR SOLICITAÇÕES (COM EXCLUSÃO)
+# GERENCIAR SOLICITAÇÕES
 # =============================================
-elif menu == "Gerenciar Solicitações" and st.session_state.tipo_usuario == 'solicitante':
-    st.markdown("### Gerenciar Solicitações")
+elif menu == "📋 Gerenciar Solicitações" and st.session_state.tipo_usuario == 'solicitante':
+    st.markdown("### 📋 Gerenciar Solicitações")
     
     try:
         minhas_solicitacoes = get_solicitacoes_por_usuario(st.session_state.usuario_id)
@@ -1242,575 +1233,447 @@ elif menu == "Gerenciar Solicitações" and st.session_state.tipo_usuario == 'so
         
         if minhas_solicitacoes:
             for sol in minhas_solicitacoes:
-                with st.expander(f"{sol.get('id', '')} - {sol.get('local_coleta', '')} → {sol.get('local_entrega', '')} - {sol.get('status', '')}"):
+                leilao_status = "🔒 Leilão Encerrado" if sol.get('leilao_encerrado') else "🔄 Leilão Ativo"
+                
+                with st.expander(f"{sol['id']} - {sol['local_coleta']} → {sol['local_entrega']} - {leilao_status}"):
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        st.markdown(f"**Material:** {sol.get('material', '')}")
-                        st.markdown(f"**Valor da Carga:** R$ {float(sol.get('valor_carga', 0)):,.2f}" if sol.get('valor_carga') else "**Valor da Carga:** Não informado")
-                        st.markdown(f"**Data Coleta:** {sol.get('data_coleta', '')}")
-                        st.markdown(f"**Tomador:** {sol.get('tomador', '')}")
+                        st.write(f"**Material:** {sol['material']}")
+                        st.write(f"**Valor da Carga:** R$ {sol['valor_carga']:,.2f}" if sol['valor_carga'] else "Não informado")
+                        st.write(f"**Data Coleta:** {sol['data_coleta']}")
+                        st.write(f"**Tomador:** {sol['tomador']}")
                     
                     with col2:
-                        st.markdown(f"**Data Entrega:** {sol.get('data_entrega', '')}")
-                        st.markdown(f"**Status:** {sol.get('status', '')}")
-                        st.markdown(f"**Criada em:** {data_ptbr(sol.get('created_at', ''))}")
-                        st.markdown(f"**Observações:** {sol.get('observacoes', '') if sol.get('observacoes') else 'Nenhuma'}")
+                        st.write(f"**Data Entrega:** {sol['data_entrega']}")
+                        st.write(f"**Status:** {sol['status']}")
+                        st.write(f"**Criada em:** {data_ptbr(sol['created_at'])}")
+                        st.write(f"**Observações:** {sol['observacoes'] or 'Nenhuma'}")
                     
-                    # CONTAR COTAÇÕES
-                    cotacoes_sol = get_cotacoes_por_solicitacao(sol.get('id', ''))
-                    st.markdown(f"**Cotações recebidas:** {len(cotacoes_sol)}")
+                    cotacoes_sol = get_cotacoes_por_solicitacao(sol['id'])
+                    st.write(f"**Cotações recebidas:** {len(cotacoes_sol)}")
+                    
+                    if cotacoes_sol:
+                        st.markdown("---")
+                        st.markdown("#### Melhores Cotações")
+                        cotacoes_ordenadas = sorted(cotacoes_sol, key=lambda x: x['valor_frete'])
+                        for i, cot in enumerate(cotacoes_ordenadas[:5]):
+                            posicao = i + 1
+                            emoji = "🥇" if posicao == 1 else "🥈" if posicao == 2 else "🥉" if posicao == 3 else f"{posicao}º"
+                            st.write(f"{emoji} **{cot['transportadora_nome']}** - R$ {cot['valor_frete']:,.2f}")
                     
                     st.markdown("---")
                     st.markdown("#### Excluir Solicitação")
                     
-                    with st.form(f"excluir_sol_{sol.get('id', '')}"):
-                        st.markdown('<div class="danger-zone">', unsafe_allow_html=True)
-                        st.error("ATENÇÃO: Esta ação não pode ser desfeita!")
-                        st.write("Serão excluídos:")
-                        st.write("- Esta solicitação")
-                        st.write("- Todas as cotações relacionadas")
+                    with st.form(f"excluir_sol_{sol['id']}"):
+                        st.warning("⚠️ ATENÇÃO: Esta ação não pode ser desfeita!")
+                        st.write("Serão excluídos: esta solicitação e todas as cotações relacionadas")
                         
-                        confirmar = st.checkbox("Confirmar exclusão permanente", key=f"confirm_{sol.get('id', '')}")
-                        confirmar2 = st.checkbox("Estou ciente que esta ação é irreversível", key=f"confirm2_{sol.get('id', '')}")
+                        confirmar = st.checkbox("Confirmar exclusão permanente", key=f"confirm_{sol['id']}")
                         
-                        if st.form_submit_button("EXCLUIR SOLICITAÇÃO", 
-                                               disabled=not (confirmar and confirmar2),
-                                               type="secondary"):
-                            try:
-                                if excluir_solicitacao(sol.get('id', '')):
-                                    st.success("Solicitação excluída com sucesso!")
-                                    adicionar_log_seguranca({
-                                        'usuario_id': st.session_state.usuario_id,
-                                        'acao': 'EXCLUIR_SOLICITACAO',
-                                        'descricao': f'Solicitação ID: {sol.get("id", "")}',
-                                        'ip': 'N/A',
-                                        'user_agent': 'N/A',
-                                        'created_at': datetime.now()
-                                    })
-                                    time.sleep(2)
-                                    st.rerun()
-                                else:
-                                    st.error("Erro ao excluir solicitação")
-                            except Exception as e:
-                                st.error(f"Erro ao excluir: {str(e)}")
-                        st.markdown('</div>', unsafe_allow_html=True)
+                        if st.form_submit_button("EXCLUIR SOLICITAÇÃO", disabled=not confirmar):
+                            if excluir_solicitacao(sol['id']):
+                                show_toast("Solicitação excluída com sucesso!", "success")
+                                adicionar_log_seguranca(
+                                    st.session_state.usuario_id,
+                                    'EXCLUIR_SOLICITACAO',
+                                    f'Solicitação: {sol["id"]}',
+                                    st.session_state.get('ip', 'N/A')
+                                )
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                show_toast("Erro ao excluir solicitação", "error")
         else:
             st.info("Nenhuma solicitação criada ainda")
     except Exception as e:
         st.error(f"Erro ao carregar solicitações: {e}")
-        st.info("Tente recarregar a página")
 
 # =============================================
-# COTAÇÕES RECEBIDAS (COM EXCLUSÃO)
+# COTAÇÕES RECEBIDAS
 # =============================================
-elif menu == "Cotações Recebidas" and st.session_state.tipo_usuario == 'solicitante':
-    st.markdown("### Cotações Recebidas")
+elif menu == "💰 Cotações Recebidas" and st.session_state.tipo_usuario == 'solicitante':
+    st.markdown("### 💰 Cotações Recebidas")
     
     try:
         minhas_solicitacoes = get_solicitacoes_por_usuario(st.session_state.usuario_id)
         todas_cotacoes = get_cotacoes()
         
-        # Filtrar cotações das minhas solicitações
         minhas_cotacoes = []
         for cot in todas_cotacoes:
             for sol in minhas_solicitacoes:
-                if sol.get('id') == cot.get('solicitacao_id'):
+                if sol['id'] == cot['solicitacao_id']:
                     minhas_cotacoes.append({
                         **cot,
-                        'local_coleta': sol.get('local_coleta'),
-                        'local_entrega': sol.get('local_entrega'),
-                        'material': sol.get('material'),
-                        'valor_carga': sol.get('valor_carga')
+                        'local_coleta': sol['local_coleta'],
+                        'local_entrega': sol['local_entrega'],
+                        'material': sol['material'],
+                        'leilao_encerrado': sol['leilao_encerrado']
                     })
                     break
         
-        minhas_cotacoes.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        minhas_cotacoes.sort(key=lambda x: x['created_at'], reverse=True)
         
         if minhas_cotacoes:
-            # Estatísticas
-            total_cotacoes = len(minhas_cotacoes)
-            cotacoes_aceitas = sum(1 for cot in minhas_cotacoes if cot.get('status') == "Aceita")
-            cotacoes_pendentes = sum(1 for cot in minhas_cotacoes if cot.get('status') == "Pendente")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total de Cotações", total_cotacoes)
-            with col2:
-                st.metric("Cotações Pendentes", cotacoes_pendentes)
-            with col3:
-                st.metric("Cotações Aceitas", cotacoes_aceitas)
-            
-            st.markdown("---")
-            
-            for i, cot in enumerate(minhas_cotacoes):
-                # Definir estilo baseado no status
-                if cot.get('status') == "Aceita":
-                    status_emoji = "✅"
-                    border_color = "4px solid #10b981"
-                elif cot.get('status') == "Recusada":
-                    status_emoji = "❌"
-                    border_color = "4px solid #ef4444"
-                else:
-                    status_emoji = "⏳"
-                    border_color = "4px solid #3b82f6"
+            for cot in minhas_cotacoes:
+                status_emoji = "✅" if cot['status'] == "Aceita" else "❌" if cot['status'] == "Recusada" else "⏳"
+                editado = " (Editada)" if cot.get('updated_at') != cot.get('created_at') else ""
                 
-                valor_frete = float(cot.get('valor_frete', 0)) if cot.get('valor_frete') else 0
-                
-                with st.expander(f"{status_emoji} {cot.get('id', '')} - {cot.get('local_coleta', '')} → {cot.get('local_entrega', '')} - R$ {valor_frete:,.2f}", expanded=False):
-                    # Card com borda colorida
-                    st.markdown(f"""
-                    <div style="border-left: {border_color}; padding-left: 1rem; margin-bottom: 1rem;">
-                        <h4>Cotação {cot.get('id', '')} - Status: {cot.get('status', '')}</h4>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
+                with st.expander(f"{status_emoji} {cot['id']} - {cot['local_coleta']} → {cot['local_entrega']} - R$ {cot['valor_frete']:,.2f}{editado}"):
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        st.markdown("**Informações da Transportadora**")
-                        st.markdown(f"**Empresa:** {cot.get('transportadora_nome', '')}")
-                        st.markdown(f"**Solicitação:** {cot.get('solicitacao_id', '')}")
-                        st.markdown(f"**Material:** {cot.get('material', '')}")
-                        valor_carga = float(cot.get('valor_carga', 0)) if cot.get('valor_carga') else 0
-                        st.markdown(f"**Valor da Carga:** R$ {valor_carga:,.2f}")
+                        st.write(f"**Transportadora:** {cot['transportadora_nome']}")
+                        st.write(f"**Material:** {cot['material']}")
+                        st.write(f"**Valor do Frete:** R$ {cot['valor_frete']:,.2f}")
                     
                     with col2:
-                        st.markdown("**Detalhes da Cotação**")
-                        st.markdown(f"**Valor do Frete:** R$ {valor_frete:,.2f}")
-                        st.markdown(f"**Prazo:** {cot.get('prazo_entrega', '')}")
-                        st.markdown(f"**Status:** {cot.get('status', '')}")
-                        st.markdown(f"**Enviada em:** {data_ptbr(cot.get('created_at', ''))}")
+                        st.write(f"**Prazo:** {cot['prazo_entrega']}")
+                        st.write(f"**Status:** {cot['status']}")
+                        st.write(f"**Enviada em:** {data_ptbr(cot['created_at'])}")
                     
                     with col3:
-                        st.markdown("**Observações**")
-                        st.markdown(f"**Observações:** {cot.get('observacoes', '') if cot.get('observacoes') else 'Nenhuma'}")
+                        st.write(f"**Observações:** {cot['observacoes'] or 'Nenhuma'}")
                         
-                        # BOTÕES DE AÇÃO
-                        st.markdown("**Ações Rápidas**")
-                        
-                        if cot.get('status') == "Pendente":
+                        if cot['status'] == "Pendente" and not cot['leilao_encerrado']:
                             col_aceitar, col_recusar = st.columns(2)
                             with col_aceitar:
-                                if st.button("Aceitar", key=f"aceitar_{cot.get('id', '')}_{i}", use_container_width=True):
-                                    if atualizar_cotacao(cot.get('id', ''), {'status': 'Aceita'}):
-                                        st.success("Cotação aceita com sucesso!")
-                                        adicionar_log_seguranca({
-                                            'usuario_id': st.session_state.usuario_id,
-                                            'acao': 'COTACAO_ACEITA',
-                                            'descricao': f'Cotação ID: {cot.get("id", "")}',
-                                            'ip': 'N/A',
-                                            'user_agent': 'N/A',
-                                            'created_at': datetime.now()
-                                        })
+                                if st.button("✅ Aceitar", key=f"aceitar_{cot['id']}"):
+                                    if atualizar_cotacao(cot['id'], {'status': 'Aceita'}):
+                                        show_toast(f"Cotação de {cot['transportadora_nome']} aceita!", "success")
+                                        adicionar_log_seguranca(
+                                            st.session_state.usuario_id,
+                                            'COTACAO_ACEITA',
+                                            f'Cotação: {cot["id"]}',
+                                            st.session_state.get('ip', 'N/A')
+                                        )
                                         time.sleep(1)
                                         st.rerun()
-                                    else:
-                                        st.error("Erro ao aceitar cotação")
                             
                             with col_recusar:
-                                if st.button("Recusar", key=f"recusar_{cot.get('id', '')}_{i}", use_container_width=True):
-                                    if atualizar_cotacao(cot.get('id', ''), {'status': 'Recusada'}):
-                                        st.error("Cotação recusada!")
-                                        adicionar_log_seguranca({
-                                            'usuario_id': st.session_state.usuario_id,
-                                            'acao': 'COTACAO_RECUSADA',
-                                            'descricao': f'Cotação ID: {cot.get("id", "")}',
-                                            'ip': 'N/A',
-                                            'user_agent': 'N/A',
-                                            'created_at': datetime.now()
-                                        })
+                                if st.button("❌ Recusar", key=f"recusar_{cot['id']}"):
+                                    if atualizar_cotacao(cot['id'], {'status': 'Recusada'}):
+                                        show_toast("Cotação recusada", "warning")
                                         time.sleep(1)
                                         st.rerun()
-                                    else:
-                                        st.error("Erro ao recusar cotação")
-                        else:
-                            st.info(f"Cotação já {cot.get('status', '').lower()}")
-                    
-                    # EXCLUSÃO DE COTAÇÃO
-                    st.markdown("---")
-                    st.markdown("#### Excluir Cotação")
-                    
-                    with st.form(f"excluir_cot_{cot.get('id', '')}_{i}"):
-                        st.warning("**ATENÇÃO:** Esta ação não pode ser desfeita. A cotação será removida permanentemente do sistema.")
-                        
-                        confirmar1 = st.checkbox("Entendo que esta ação é permanente", key=f"confirm1_{cot.get('id', '')}_{i}")
-                        confirmar2 = st.checkbox("Desejo realmente excluir esta cotação", key=f"confirm2_{cot.get('id', '')}_{i}")
-                        
-                        if st.form_submit_button("EXCLUIR COTAÇÃO", 
-                                               disabled=not (confirmar1 and confirmar2),
-                                               type="secondary"):
-                            try:
-                                if excluir_cotacao(cot.get('id', '')):
-                                    st.success("Cotação excluída com sucesso!")
-                                    adicionar_log_seguranca({
-                                        'usuario_id': st.session_state.usuario_id,
-                                        'acao': 'EXCLUIR_COTACAO',
-                                        'descricao': f'Cotação ID: {cot.get("id", "")}',
-                                        'ip': 'N/A',
-                                        'user_agent': 'N/A',
-                                        'created_at': datetime.now()
-                                    })
-                                    time.sleep(1)
-                                    st.rerun()
-                                else:
-                                    st.error("Erro ao excluir cotação")
-                            except Exception as e:
-                                st.error(f"Erro ao excluir cotação: {str(e)}")
         else:
             st.info("Nenhuma cotação recebida ainda")
-            
     except Exception as e:
-        st.error(f"Erro no sistema: {str(e)}")
-        st.info("Tente recarregar a página")
+        st.error(f"Erro ao carregar cotações: {e}")
 
 # =============================================
-# TRANSPORTADORAS CADASTRADAS (SOLICITANTE)
+# ENCERRAR LEILÃO
 # =============================================
-elif menu == "Transportadoras Cadastradas" and st.session_state.tipo_usuario == 'solicitante':
-    st.markdown("### Transportadoras Cadastradas")
+elif menu == "🏆 Encerrar Leilão" and st.session_state.tipo_usuario == 'solicitante':
+    st.markdown("### 🏆 Encerrar Leilão e Selecionar Vencedor")
+    st.warning("⚠️ Após encerrar o leilão, novas cotações não serão mais aceitas")
+    
+    try:
+        minhas_solicitacoes = get_solicitacoes_por_usuario(st.session_state.usuario_id)
+        solicitacoes_ativas = [s for s in minhas_solicitacoes if s['status'] == 'Aberta' and not s['leilao_encerrado']]
+        
+        if solicitacoes_ativas:
+            for sol in solicitacoes_ativas:
+                cotacoes_sol = get_cotacoes_por_solicitacao(sol['id'])
+                cotacoes_ordenadas = sorted(cotacoes_sol, key=lambda x: x['valor_frete'])
+                
+                with st.expander(f"{sol['id']} - {sol['local_coleta']} → {sol['local_entrega']} - {len(cotacoes_sol)} cotações"):
+                    st.write(f"**Material:** {sol['material']}")
+                    st.write(f"**Valor da Carga:** R$ {sol['valor_carga']:,.2f}")
+                    
+                    if cotacoes_ordenadas:
+                        st.markdown("#### Ranking das Cotações")
+                        
+                        for i, cot in enumerate(cotacoes_ordenadas):
+                            posicao = i + 1
+                            emoji = "🥇" if posicao == 1 else "🥈" if posicao == 2 else "🥉" if posicao == 3 else f"{posicao}º"
+                            
+                            if posicao == 1:
+                                st.success(f"{emoji} **{cot['transportadora_nome']}** - R$ {cot['valor_frete']:,.2f} - {cot['prazo_entrega']}")
+                            else:
+                                st.write(f"{emoji} {cot['transportadora_nome']} - R$ {cot['valor_frete']:,.2f} - {cot['prazo_entrega']}")
+                        
+                        melhor_cotacao = cotacoes_ordenadas[0]
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.info(f"**Melhor Cotação:** {melhor_cotacao['transportadora_nome']} - R$ {melhor_cotacao['valor_frete']:,.2f}")
+                        with col2:
+                            if st.button(f"🏆 Encerrar Leilão - Selecionar {melhor_cotacao['transportadora_nome']}", key=f"encerrar_{sol['id']}"):
+                                if atualizar_cotacao(melhor_cotacao['id'], {'status': 'Aceita'}):
+                                    if atualizar_solicitacao(sol['id'], {'status': 'Fechada', 'leilao_encerrado': True, 'vencedor_id': melhor_cotacao['transportadora_id'], 'valor_vencedor': melhor_cotacao['valor_frete']}):
+                                        show_toast(f"Leilão encerrado! Vencedor: {melhor_cotacao['transportadora_nome']} - R$ {melhor_cotacao['valor_frete']:,.2f}", "success")
+                                        adicionar_log_seguranca(
+                                            st.session_state.usuario_id,
+                                            'LEILAO_ENCERRADO',
+                                            f'Solicitação {sol["id"]} vencedor: {melhor_cotacao["transportadora_nome"]}',
+                                            st.session_state.get('ip', 'N/A')
+                                        )
+                                        time.sleep(2)
+                                        st.rerun()
+                    else:
+                        st.warning("Nenhuma cotação recebida para este frete ainda")
+        else:
+            st.info("Não há leilões ativos para encerrar")
+    except Exception as e:
+        st.error(f"Erro ao carregar leilões: {e}")
+
+# =============================================
+# TRANSPORTADORAS CADASTRADAS
+# =============================================
+elif menu == "🚛 Transportadoras Cadastradas" and st.session_state.tipo_usuario == 'solicitante':
+    st.markdown("### 🚛 Transportadoras Cadastradas")
     
     try:
         usuarios = get_usuarios()
-        transportadoras = [u for u in usuarios if u.get('tipo') == 'transportadora' and u.get('status') == 'Ativa']
+        transportadoras = [u for u in usuarios if u['tipo'] == 'transportadora' and u['status'] == 'Ativa']
         
         if transportadoras:
             st.info(f"**Total de transportadoras:** {len(transportadoras)}")
             
             for transp in transportadoras:
-                with st.expander(f"{transp.get('razao_social', '')}"):
+                with st.expander(f"{transp['razao_social']}"):
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.markdown(f"**Razão Social:** {transp.get('razao_social', '')}")
-                        st.markdown(f"**CNPJ:** {transp.get('cnpj', '')}")
-                        st.markdown(f"**E-mail:** {transp.get('email', '')}")
+                        st.write(f"**Razão Social:** {transp['razao_social']}")
+                        st.write(f"**CNPJ:** ****{transp['cnpj_ultimos4']}")
+                        st.write(f"**E-mail:** ****@****")
                     with col2:
-                        st.markdown(f"**Telefone:** {transp.get('telefone', '')}")
-                        st.markdown(f"**Cidade:** {transp.get('cidade', '')}")
-                        st.markdown(f"**Data Cadastro:** {transp.get('data_cadastro', '')}")
+                        st.write(f"**Telefone:** {transp['telefone']}")
+                        st.write(f"**Cidade:** {transp['cidade']}")
+                        st.write(f"**Data Cadastro:** {transp['data_cadastro']}")
         else:
             st.info("Nenhuma transportadora cadastrada")
     except Exception as e:
         st.error(f"Erro ao carregar transportadoras: {e}")
 
 # =============================================
-# FRETES DISPONÍVEIS (PARA TRANSPORTADORAS)
+# FRETES DISPONÍVEIS (TRANSPORTADORA)
 # =============================================
-elif menu == "Fretes Disponíveis" and st.session_state.tipo_usuario == 'transportadora':
-    st.markdown("### Fretes Disponíveis para Cotação")
+elif menu == "🚚 Fretes Disponíveis" and st.session_state.tipo_usuario == 'transportadora':
+    st.markdown("### 🚚 Fretes Disponíveis para Cotação")
+    st.info("💡 **Como funciona:** Você vê apenas os valores das outras cotações, não os nomes. O menor valor vence! Você pode editar sua cotação a qualquer momento.")
     
     try:
         solicitacoes = get_solicitacoes()
-        solicitacoes_abertas = [s for s in solicitacoes if s.get('status') == 'Aberta']
-        solicitacoes_abertas.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        solicitacoes_abertas = [s for s in solicitacoes if s['status'] == 'Aberta' and not s['leilao_encerrado']]
+        solicitacoes_abertas.sort(key=lambda x: x['created_at'], reverse=True)
         
         if solicitacoes_abertas:
-            st.info(f"**Total de fretes disponíveis:** {len(solicitacoes_abertas)}")
-            
             for sol in solicitacoes_abertas:
-                # Buscar cotações existentes
-                cotacoes_existentes = get_cotacoes_por_solicitacao(sol.get('id'))
-                cotacoes_existentes.sort(key=lambda x: float(x.get('valor_frete', 0)) if x.get('valor_frete') else 0)
+                cotacoes_existentes = get_cotacoes_por_solicitacao(sol['id'])
+                minha_cotacao = None
+                for cot in cotacoes_existentes:
+                    if cot['transportadora_id'] == st.session_state.usuario_id:
+                        minha_cotacao = cot
+                        break
                 
-                with st.expander(f"{sol.get('id', '')} - {sol.get('local_coleta', '')} → {sol.get('local_entrega', '')} - {len(cotacoes_existentes)} cotações"):
+                cotacoes_ordenadas = sorted(cotacoes_existentes, key=lambda x: x['valor_frete'])
+                
+                with st.expander(f"{sol['id']} - {sol['local_coleta']} → {sol['local_entrega']} - {len(cotacoes_existentes)} cotações"):
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        st.markdown(f"**Material:** {sol.get('material', '')}")
-                        valor_carga = float(sol.get('valor_carga', 0)) if sol.get('valor_carga') else 0
-                        st.markdown(f"**Valor da Carga:** R$ {valor_carga:,.2f}")
-                        st.markdown(f"**Data Coleta:** {sol.get('data_coleta', '')}")
-                        st.markdown(f"**Tomador:** {sol.get('tomador', '')}")
+                        st.write(f"**Material:** {sol['material']}")
+                        st.write(f"**Valor da Carga:** R$ {sol['valor_carga']:,.2f}")
+                        st.write(f"**Data Coleta:** {sol['data_coleta']}")
                     
                     with col2:
-                        st.markdown(f"**Data Entrega:** {sol.get('data_entrega', '')}")
-                        st.markdown(f"**Observações:** {sol.get('observacoes', '') if sol.get('observacoes') else 'Nenhuma'}")
-                        st.markdown(f"**Publicada em:** {data_ptbr(sol.get('created_at', ''))}")
+                        st.write(f"**Data Entrega:** {sol['data_entrega']}")
+                        st.write(f"**Observações:** {sol['observacoes'] or 'Nenhuma'}")
+                        st.write(f"**Publicada em:** {data_ptbr(sol['created_at'])}")
                     
-                    # LEILÃO REVERSO - MOSTRAR COTAÇÕES EXISTENTES (SEM NOMES)
-                    if cotacoes_existentes:
+                    if cotacoes_ordenadas:
                         st.markdown("---")
-                        st.markdown("#### Ranking Atual de Cotações")
+                        st.markdown("#### Ranking Atual de Cotações (Apenas valores)")
                         
-                        for i, cot in enumerate(cotacoes_existentes[:5]):
+                        for i, cot in enumerate(cotacoes_ordenadas[:5]):
                             posicao = i + 1
                             emoji = "🥇" if posicao == 1 else "🥈" if posicao == 2 else "🥉" if posicao == 3 else f"{posicao}º"
                             
-                            tempo = tempo_desde(cot.get('created_at', ''))
-                            valor_frete = float(cot.get('valor_frete', 0)) if cot.get('valor_frete') else 0
-                            
-                            st.markdown(f"{emoji} **R$ {valor_frete:,.2f}** | {cot.get('prazo_entrega', '')} | {tempo}")
-                        
-                        if len(cotacoes_existentes) > 5:
-                            st.info(f"... e mais {len(cotacoes_existentes) - 5} cotações")
+                            if cot['transportadora_id'] == st.session_state.usuario_id:
+                                st.success(f"{emoji} **R$ {cot['valor_frete']:,.2f}** - {cot['prazo_entrega']} (MINHA COTAÇÃO)")
+                            else:
+                                st.write(f"{emoji} **R$ {cot['valor_frete']:,.2f}** - {cot['prazo_entrega']}")
                     
-                    # FORMULÁRIO PARA ENVIAR COTAÇÃO
                     st.markdown("---")
-                    with st.form(f"cotacao_form_{sol.get('id', '')}"):
-                        st.markdown("#### Enviar Minha Cotação")
+                    
+                    with st.form(f"cotacao_form_{sol['id']}"):
+                        st.markdown("#### Minha Cotação")
+                        
+                        valor_padrao = minha_cotacao['valor_frete'] if minha_cotacao else 0.0
+                        prazo_padrao = minha_cotacao['prazo_entrega'] if minha_cotacao else '3 dias'
+                        obs_padrao = minha_cotacao['observacoes'] if minha_cotacao else ''
                         
                         col_valor, col_prazo = st.columns(2)
+                        
                         with col_valor:
-                            valor_frete = st.number_input("Meu Valor (R$)", min_value=0.0, format="%.2f", key=f"valor_{sol.get('id', '')}")
+                            valor_frete = st.number_input("Valor do Frete (R$)", min_value=0.01, format="%.2f", value=valor_padrao)
                         with col_prazo:
-                            prazo_entrega = st.selectbox("Meu Prazo", ["2 dias", "3 dias", "4 dias", "5 dias", "1 semana"], key=f"prazo_{sol.get('id', '')}")
+                            prazo_entrega = st.selectbox("Prazo de Entrega", ["2 dias", "3 dias", "4 dias", "5 dias", "1 semana"], index=["2 dias", "3 dias", "4 dias", "5 dias", "1 semana"].index(prazo_padrao) if prazo_padrao in ["2 dias", "3 dias", "4 dias", "5 dias", "1 semana"] else 1)
                         
-                        observacoes = st.text_area("Minhas Observações", placeholder="Condições especiais, observações...", key=f"obs_{sol.get('id', '')}")
+                        observacoes = st.text_area("Observações", value=obs_padrao)
                         
-                        submitted = st.form_submit_button("Enviar Cotação")
-                        
-                        if submitted:
-                            if valor_frete > 0:
-                                # Verificar se já existe cotação desta transportadora para esta solicitação
-                                todas_cotacoes = get_cotacoes()
-                                ja_cotou = any(
-                                    cot.get('solicitacao_id') == sol.get('id') and 
-                                    cot.get('transportadora_id') == st.session_state.usuario_id 
-                                    for cot in todas_cotacoes
-                                )
-                                
-                                if ja_cotou:
-                                    st.error("Você já enviou uma cotação para este frete!")
-                                else:
-                                    cotacao_id = f"COT-{uuid.uuid4().hex[:8].upper()}"
-                                    cotacao_dict = {
-                                        'id': cotacao_id,
-                                        'solicitacao_id': sol.get('id', ''),
-                                        'transportadora_id': st.session_state.usuario_id,
-                                        'transportadora_nome': st.session_state.razao_social,
-                                        'valor_frete': valor_frete,
-                                        'prazo_entrega': prazo_entrega,
-                                        'observacoes': observacoes,
-                                        'status': 'Pendente',
-                                        'created_at': datetime.now()
-                                    }
-                                    
-                                    if adicionar_cotacao(cotacao_dict):
-                                        st.success("Cotação enviada com sucesso! Agora outras empresas verão seu valor (sem seu nome)")
-                                        adicionar_log_seguranca({
-                                            'usuario_id': st.session_state.usuario_id,
-                                            'acao': 'NOVA_COTACAO',
-                                            'descricao': f'Cotação: {cotacao_id} para Solicitação: {sol.get("id", "")}',
-                                            'ip': 'N/A',
-                                            'user_agent': 'N/A',
-                                            'created_at': datetime.now()
-                                        })
-                                        time.sleep(1)
-                                        st.rerun()
-                                    else:
-                                        st.error("Erro ao enviar cotação")
+                        if st.form_submit_button("Salvar Cotação" if minha_cotacao else "Enviar Cotação"):
+                            if valor_frete <= 0:
+                                show_toast("Informe um valor válido", "error")
                             else:
-                                st.error("Informe um valor válido para o frete")
+                                with st.spinner("Processando..."):
+                                    if minha_cotacao:
+                                        if atualizar_cotacao(minha_cotacao['id'], {
+                                            'valor_frete': valor_frete,
+                                            'prazo_entrega': prazo_entrega,
+                                            'observacoes': observacoes
+                                        }):
+                                            show_toast("Cotação atualizada com sucesso!", "success")
+                                            adicionar_log_seguranca(
+                                                st.session_state.usuario_id,
+                                                'COTACAO_EDITADA',
+                                                f'Cotação para solicitação {sol["id"]}',
+                                                st.session_state.get('ip', 'N/A')
+                                            )
+                                            time.sleep(1)
+                                            st.rerun()
+                                    else:
+                                        cotacao_id = f"COT-{secrets.token_hex(4).upper()}"
+                                        cotacao_dict = {
+                                            'id': cotacao_id,
+                                            'solicitacao_id': sol['id'],
+                                            'transportadora_id': st.session_state.usuario_id,
+                                            'transportadora_nome': st.session_state.razao_social,
+                                            'valor_frete': valor_frete,
+                                            'prazo_entrega': prazo_entrega,
+                                            'observacoes': observacoes,
+                                            'status': 'Pendente',
+                                            'created_at': datetime.now(),
+                                            'updated_at': datetime.now()
+                                        }
+                                        
+                                        if adicionar_cotacao(cotacao_dict):
+                                            show_toast("Cotação enviada com sucesso!", "success")
+                                            adicionar_log_seguranca(
+                                                st.session_state.usuario_id,
+                                                'NOVA_COTACAO',
+                                                f'Cotação para solicitação {sol["id"]}',
+                                                st.session_state.get('ip', 'N/A')
+                                            )
+                                            time.sleep(1)
+                                            st.rerun()
         else:
             st.info("Nenhum frete disponível para cotação no momento")
     except Exception as e:
         st.error(f"Erro ao carregar fretes: {e}")
 
 # =============================================
-# MINHAS COTAÇÕES (TRANSPORTADORAS)
+# MINHAS COTAÇÕES (TRANSPORTADORA)
 # =============================================
-elif menu == "Minhas Cotações" and st.session_state.tipo_usuario == 'transportadora':
-    st.markdown("### Minhas Cotações Enviadas")
+elif menu == "📝 Minhas Cotações" and st.session_state.tipo_usuario == 'transportadora':
+    st.markdown("### 📝 Minhas Cotações Enviadas")
     
     try:
         minhas_cotacoes = get_cotacoes_por_transportadora(st.session_state.usuario_id)
-        minhas_cotacoes.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        minhas_cotacoes.sort(key=lambda x: x['created_at'], reverse=True)
         
         if minhas_cotacoes:
-            # Estatísticas
-            total_cotacoes = len(minhas_cotacoes)
-            cotacoes_aceitas = sum(1 for cot in minhas_cotacoes if cot.get('status') == "Aceita")
-            cotacoes_pendentes = sum(1 for cot in minhas_cotacoes if cot.get('status') == "Pendente")
-            cotacoes_recusadas = sum(1 for cot in minhas_cotacoes if cot.get('status') == "Recusada")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total", total_cotacoes)
-            with col2:
-                st.metric("Pendentes", cotacoes_pendentes)
-            with col3:
-                st.metric("Aceitas", cotacoes_aceitas)
-            with col4:
-                st.metric("Recusadas", cotacoes_recusadas)
-            
-            st.markdown("---")
-            
             for cot in minhas_cotacoes:
-                # Obter informações da solicitação
-                solicitacao = get_solicitacao_por_id(cot.get('solicitacao_id', ''))
+                solicitacao = get_solicitacao_por_id(cot['solicitacao_id'])
                 
                 if solicitacao:
-                    # Definir cores e emojis baseados no status
-                    if cot.get('status') == "Aceita":
-                        status_color = "✅"
-                        status_text = "Cotação Aceita"
-                        border_color = "2px solid #10b981"
-                    elif cot.get('status') == "Recusada":
-                        status_color = "❌"
-                        status_text = "Cotação Recusada"
-                        border_color = "2px solid #ef4444"
-                    else:
-                        status_color = "⏳"
-                        status_text = "Aguardando Avaliação"
-                        border_color = "2px solid #f59e0b"
+                    status_emoji = "✅" if cot['status'] == "Aceita" else "❌" if cot['status'] == "Recusada" else "⏳"
+                    editado = " (Editada)" if cot.get('updated_at') != cot.get('created_at') else ""
                     
-                    valor_frete = float(cot.get('valor_frete', 0)) if cot.get('valor_frete') else 0
-                    
-                    with st.expander(f"{status_color} {cot.get('id', '')} - {solicitacao.get('local_coleta', '')} → {solicitacao.get('local_entrega', '')} - R$ {valor_frete:,.2f}"):
-                        # Card com borda colorida baseada no status
-                        st.markdown(f"""
-                        <div style="border-left: {border_color}; padding-left: 1rem; margin-bottom: 1rem;">
-                            <h4>{status_text}</h4>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
+                    with st.expander(f"{status_emoji} {cot['id']} - {solicitacao['local_coleta']} → {solicitacao['local_entrega']} - R$ {cot['valor_frete']:,.2f}{editado}"):
                         col1, col2 = st.columns(2)
                         
                         with col1:
-                            st.markdown(f"**Material:** {solicitacao.get('material', '')}")
-                            st.markdown(f"**Meu Valor:** R$ {valor_frete:,.2f}")
-                            st.markdown(f"**Meu Prazo:** {cot.get('prazo_entrega', '')}")
-                            st.markdown(f"**Local Coleta:** {solicitacao.get('local_coleta', '')}")
-                            st.markdown(f"**Local Entrega:** {solicitacao.get('local_entrega', '')}")
+                            st.write(f"**Material:** {solicitacao['material']}")
+                            st.write(f"**Meu Valor:** R$ {cot['valor_frete']:,.2f}")
+                            st.write(f"**Meu Prazo:** {cot['prazo_entrega']}")
                         
                         with col2:
-                            st.markdown(f"**Solicitação:** {cot.get('solicitacao_id', '')}")
-                            st.markdown(f"**Data Envio:** {data_ptbr(cot.get('created_at', ''))}")
-                            st.markdown(f"**Status Solicitação:** {solicitacao.get('status', '')}")
-                            st.markdown(f"**Minhas Observações:** {cot.get('observacoes', '') if cot.get('observacoes') else 'Nenhuma'}")
-                            
-                            # Botão para cancelar cotação se ainda estiver pendente
-                            if cot.get('status') == "Pendente":
-                                st.markdown("---")
-                                if st.button("Cancelar Cotação", key=f"cancelar_{cot.get('id', '')}"):
-                                    if excluir_cotacao(cot.get('id', '')):
-                                        st.success("Cotação cancelada com sucesso!")
-                                        adicionar_log_seguranca({
-                                            'usuario_id': st.session_state.usuario_id,
-                                            'acao': 'CANCELAR_COTACAO',
-                                            'descricao': f'Cotação ID: {cot.get("id", "")}',
-                                            'ip': 'N/A',
-                                            'user_agent': 'N/A',
-                                            'created_at': datetime.now()
-                                        })
-                                        time.sleep(1)
-                                        st.rerun()
-                                    else:
-                                        st.error("Erro ao cancelar cotação")
+                            st.write(f"**Status:** {cot['status']}")
+                            st.write(f"**Enviada em:** {data_ptbr(cot['created_at'])}")
+                            if cot.get('updated_at') != cot.get('created_at'):
+                                st.write(f"**Editada em:** {data_ptbr(cot['updated_at'])}")
+                            st.write(f"**Minhas Observações:** {cot['observacoes'] or 'Nenhuma'}")
+                        
+                        if cot['status'] == "Pendente" and not solicitacao['leilao_encerrado']:
+                            if st.button("❌ Cancelar Cotação", key=f"cancelar_{cot['id']}"):
+                                if excluir_cotacao(cot['id']):
+                                    show_toast("Cotação cancelada com sucesso!", "success")
+                                    adicionar_log_seguranca(
+                                        st.session_state.usuario_id,
+                                        'CANCELAR_COTACAO',
+                                        f'Cotação: {cot["id"]}',
+                                        st.session_state.get('ip', 'N/A')
+                                    )
+                                    time.sleep(1)
+                                    st.rerun()
         else:
             st.info("Você ainda não enviou nenhuma cotação")
     except Exception as e:
         st.error(f"Erro ao carregar cotações: {e}")
 
 # =============================================
-# BACKUP DE DADOS (APENAS SOLICITANTE)
+# BACKUP DE DADOS
 # =============================================
-elif menu == "Backup de Dados" and st.session_state.tipo_usuario == 'solicitante':
-    st.markdown("### Backup de Dados")
+elif menu == "📁 Backup de Dados" and st.session_state.tipo_usuario == 'solicitante':
+    st.markdown("### 📁 Backup de Dados")
     
-    st.info("""
-    **Gerar backup completo** de todas as suas solicitações e cotações em formato Excel.
-    O arquivo será baixado automaticamente para seu computador.
-    """)
+    st.info("Gerar backup completo de todas as suas solicitações e cotações em formato Excel.")
     
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.markdown("#### Dados Incluídos no Backup:")
-        st.markdown("✅ Todas as suas solicitações")
-        st.markdown("✅ Todas as cotações recebidas") 
-        st.markdown("✅ Informações completas de cada registro")
-        st.markdown("✅ Data e hora de criação")
-        st.markdown("✅ Status atualizados")
-    
-    with col2:
-        st.markdown("#### Informações:")
-        st.markdown("**Formato:** Excel (.xlsx)")
-        st.markdown("**Codificação:** UTF-8")
-        st.markdown("**Atualizado em:** tempo real")
-    
-    st.markdown("---")
-    
-    # Botão para gerar backup
-    if st.button("GERAR BACKUP COMPLETO", type="primary", use_container_width=True):
+    if st.button("📊 GERAR BACKUP COMPLETO", type="primary", use_container_width=True):
         with st.spinner("Gerando arquivo de backup..."):
             try:
-                # Obter dados do banco
                 solicitacoes = get_solicitacoes_por_usuario(st.session_state.usuario_id)
                 todas_cotacoes = get_cotacoes()
-                usuarios = get_usuarios()
                 
                 dados_excel = []
                 
-                # Adicionar solicitações
                 for sol in solicitacoes:
-                    usuario_nome = "N/A"
-                    for usuario in usuarios:
-                        if usuario.get('id') == sol.get('usuario_id'):
-                            usuario_nome = usuario.get('razao_social')
-                            break
-                    
                     dados_excel.append({
                         'Tipo': 'SOLICITAÇÃO',
-                        'ID': sol.get('id', ''),
-                        'Local Coleta': sol.get('local_coleta', ''),
-                        'Local Entrega': sol.get('local_entrega', ''),
-                        'Material': sol.get('material', ''),
-                        'Valor Carga': f"R$ {float(sol.get('valor_carga', 0)):,.2f}" if sol.get('valor_carga') else '',
-                        'Data Coleta': sol.get('data_coleta', ''),
-                        'Data Entrega': sol.get('data_entrega', ''),
-                        'Tomador': sol.get('tomador', ''),
-                        'Observações': sol.get('observacoes', '') or '',
-                        'Status': sol.get('status', ''),
-                        'Criado em': data_ptbr(sol.get('created_at', '')),
-                        'Usuário': usuario_nome
+                        'ID': sol['id'],
+                        'Local Coleta': sol['local_coleta'],
+                        'Local Entrega': sol['local_entrega'],
+                        'Material': sol['material'],
+                        'Valor Carga': f"R$ {sol['valor_carga']:,.2f}" if sol['valor_carga'] else '',
+                        'Data Coleta': sol['data_coleta'],
+                        'Data Entrega': sol['data_entrega'],
+                        'Tomador': sol['tomador'],
+                        'Observações': sol['observacoes'] or '',
+                        'Status': sol['status'],
+                        'Leilão Encerrado': 'Sim' if sol['leilao_encerrado'] else 'Não',
+                        'Criado em': data_ptbr(sol['created_at'])
                     })
                 
-                # Adicionar cotações
                 for cot in todas_cotacoes:
-                    # Verificar se a cotação é para uma solicitação do usuário
-                    solicitacao = get_solicitacao_por_id(cot.get('solicitacao_id'))
-                    if solicitacao and solicitacao.get('usuario_id') == st.session_state.usuario_id:
-                        # Encontrar nome da transportadora
-                        transportadora_nome = cot.get('transportadora_nome', '')
-                        for usuario in usuarios:
-                            if usuario.get('id') == cot.get('transportadora_id'):
-                                transportadora_nome = usuario.get('razao_social')
-                                break
-                        
+                    solicitacao = get_solicitacao_por_id(cot['solicitacao_id'])
+                    if solicitacao and solicitacao['usuario_id'] == st.session_state.usuario_id:
                         dados_excel.append({
                             'Tipo': 'COTAÇÃO',
-                            'ID': cot.get('id', ''),
-                            'Solicitação ID': cot.get('solicitacao_id', ''),
-                            'Transportadora': transportadora_nome,
-                            'Valor Frete': f"R$ {float(cot.get('valor_frete', 0)):,.2f}" if cot.get('valor_frete') else '',
-                            'Prazo Entrega': cot.get('prazo_entrega', ''),
-                            'Observações': cot.get('observacoes', '') or '',
-                            'Status': cot.get('status', ''),
-                            'Criado em': data_ptbr(cot.get('created_at', '')),
-                            'Local Coleta': solicitacao.get('local_coleta', ''),
-                            'Local Entrega': solicitacao.get('local_entrega', '')
+                            'ID': cot['id'],
+                            'Solicitação ID': cot['solicitacao_id'],
+                            'Transportadora': cot['transportadora_nome'],
+                            'Valor Frete': f"R$ {cot['valor_frete']:,.2f}",
+                            'Prazo Entrega': cot['prazo_entrega'],
+                            'Observações': cot['observacoes'] or '',
+                            'Status': cot['status'],
+                            'Criado em': data_ptbr(cot['created_at']),
+                            'Editado em': data_ptbr(cot['updated_at']) if cot.get('updated_at') != cot.get('created_at') else '',
+                            'Local Coleta': solicitacao['local_coleta'],
+                            'Local Entrega': solicitacao['local_entrega']
                         })
                 
                 df = pd.DataFrame(dados_excel)
                 data_atual = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
-                filename = f"backup_solicitacoes_{data_atual}.xlsx"
+                filename = f"backup_c3_{data_atual}.xlsx"
                 
-                # Salvar arquivo
                 df.to_excel(filename, index=False, engine='openpyxl')
                 
-                st.success(f"Backup gerado com sucesso!")
-                st.info(f"**Arquivo:** {filename}")
-                st.info(f"**Registros exportados:** {len(df)}")
-                
-                # Mostrar prévia dos dados
-                st.markdown("#### Prévia dos Dados Exportados:")
-                st.dataframe(df.head(10), use_container_width=True)
-                
-                # Botão para download
                 with open(filename, "rb") as file:
-                    btn = st.download_button(
-                        label="BAIXAR ARQUIVO EXCEL",
+                    st.download_button(
+                        label="💾 BAIXAR ARQUIVO EXCEL",
                         data=file,
                         file_name=filename,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1818,115 +1681,88 @@ elif menu == "Backup de Dados" and st.session_state.tipo_usuario == 'solicitante
                         use_container_width=True
                     )
                 
-                if btn:
-                    st.balloons()
-                    st.success("Download iniciado! Verifique sua pasta de downloads.")
-                    adicionar_log_seguranca({
-                        'usuario_id': st.session_state.usuario_id,
-                        'acao': 'BACKUP_GERADO',
-                        'descricao': f'Arquivo: {filename}',
-                        'ip': 'N/A',
-                        'user_agent': 'N/A',
-                        'created_at': datetime.now()
-                    })
-                        
+                st.success(f"Backup gerado com sucesso! {len(dados_excel)} registros exportados.")
+                adicionar_log_seguranca(
+                    st.session_state.usuario_id,
+                    'BACKUP_GERADO',
+                    f'Arquivo: {filename}',
+                    st.session_state.get('ip', 'N/A')
+                )
+                
             except Exception as e:
-                st.error(f"Erro ao gerar backup: {str(e)}")
-    
-    # Estatísticas rápidas
-    st.markdown("---")
-    st.markdown("### Estatísticas do Backup")
-    
-    try:
-        solicitacoes = get_solicitacoes_por_usuario(st.session_state.usuario_id)
-        
-        total_solicitacoes = len(solicitacoes)
-        
-        # Contar cotações das minhas solicitações
-        total_cotacoes = 0
-        for sol in solicitacoes:
-            cotacoes_sol = get_cotacoes_por_solicitacao(sol.get('id', ''))
-            total_cotacoes += len(cotacoes_sol)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Solicitações para Exportar", total_solicitacoes)
-        with col2:
-            st.metric("Cotações para Exportar", total_cotacoes)
-            
-    except Exception as e:
-        st.error(f"Erro ao carregar estatísticas: {str(e)}")
+                show_toast(f"Erro ao gerar backup: {e}", "error")
 
 # =============================================
 # MEU PERFIL
 # =============================================
-elif menu == "Meu Perfil":
-    st.markdown("### Meu Perfil")
+elif menu == "⚙️ Meu Perfil":
+    st.markdown("### ⚙️ Meu Perfil")
     
     usuario = get_usuario_por_id(st.session_state.usuario_id)
     
     if usuario:
         col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"**Razão Social:** {usuario.get('razao_social', '')}")
-            st.markdown(f"**CNPJ:** {usuario.get('cnpj', '')}")
-            st.markdown(f"**E-mail:** {usuario.get('email', '')}")
-        with col2:
-            st.markdown(f"**Telefone:** {usuario.get('telefone', '')}")
-            st.markdown(f"**Cidade:** {usuario.get('cidade', '')}")
-            st.markdown(f"**Tipo:** {'Solicitante' if usuario.get('tipo') == 'solicitante' else 'Transportadora'}")
-            st.markdown(f"**Data Cadastro:** {usuario.get('data_cadastro', '')}")
         
-        st.markdown("---")
-        st.markdown("### Alterar Senha")
-        with st.form("alterar_senha"):
-            senha_atual = st.text_input("Senha Atual", type="password")
-            nova_senha = st.text_input("Nova Senha", type="password")
-            confirmar_senha = st.text_input("Confirmar Nova Senha", type="password")
+        with col1:
+            st.markdown(f"""
+            <div class="card-profissional">
+                <h4>Informações Pessoais</h4>
+                <p><strong>Razão Social:</strong> {usuario['razao_social']}</p>
+                <p><strong>Telefone:</strong> {usuario['telefone']}</p>
+                <p><strong>Cidade:</strong> {usuario['cidade']}</p>
+                <p><strong>Tipo:</strong> {'Solicitante' if usuario['tipo'] == 'solicitante' else 'Transportadora'}</p>
+                <p><strong>Cadastro:</strong> {usuario['data_cadastro']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown("""
+            <div class="card-profissional">
+                <h4>Alterar Senha</h4>
+                <p style="color: var(--text-secondary); font-size: 0.875rem;">
+                    ⚠️ Use uma senha forte com pelo menos 10 caracteres, incluindo maiúsculas, minúsculas, números e símbolos.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
             
-            if st.form_submit_button("Atualizar Senha"):
-                if senha_atual and nova_senha and confirmar_senha:
-                    if hash_senha(senha_atual) == usuario.get('senha_hash', ''):
-                        if nova_senha == confirmar_senha:
-                            senha_valida, msg_senha = validar_senha_forte(nova_senha)
-                            if not senha_valida:
-                                st.error(msg_senha)
-                            else:
-                                if atualizar_usuario(st.session_state.usuario_id, {'senha_hash': hash_senha(nova_senha)}):
-                                    st.success("Senha atualizada com sucesso!")
-                                    adicionar_log_seguranca({
-                                        'usuario_id': st.session_state.usuario_id,
-                                        'acao': 'SENHA_ALTERADA',
-                                        'descricao': 'Senha do usuário alterada',
-                                        'ip': 'N/A',
-                                        'user_agent': 'N/A',
-                                        'created_at': datetime.now()
-                                    })
-                                else:
-                                    st.error("Erro ao atualizar senha")
-                        else:
-                            st.error("As novas senhas não coincidem")
+            with st.form("alterar_senha"):
+                senha_atual = st.text_input("Senha Atual", type="password")
+                nova_senha = st.text_input("Nova Senha", type="password")
+                confirmar = st.text_input("Confirmar Nova Senha", type="password")
+                
+                if st.form_submit_button("🔄 Atualizar Senha", use_container_width=True):
+                    if not all([senha_atual, nova_senha, confirmar]):
+                        show_toast("Preencha todos os campos", "error")
+                    elif nova_senha != confirmar:
+                        show_toast("As novas senhas não coincidem", "error")
                     else:
-                        st.error("Senha atual incorreta")
-                else:
-                    st.error("Preencha todos os campos")
+                        valida, msg = validar_senha_forte(nova_senha)
+                        if not valida:
+                            show_toast(msg, "error")
+                        else:
+                            session = get_session()
+                            try:
+                                usuario_obj = session.query(Usuario).filter_by(id=st.session_state.usuario_id).first()
+                                if usuario_obj and verificar_senha(senha_atual, usuario_obj.senha_hash):
+                                    usuario_obj.senha_hash = hash_senha(nova_senha)
+                                    session.commit()
+                                    show_toast("Senha alterada com sucesso!", "success")
+                                    adicionar_log_seguranca(
+                                        st.session_state.usuario_id,
+                                        'ALTERAR_SENHA',
+                                        'Senha alterada com sucesso',
+                                        st.session_state.get('ip', 'N/A')
+                                    )
+                                else:
+                                    show_toast("Senha atual incorreta", "error")
+                            finally:
+                                session.close()
 
-# FOOTER
+# Footer
 st.markdown("---")
 st.markdown("""
-<div style='text-align: center; color: #718096; padding: 2rem;'>
-    <strong>🌐Sistema de Cotações C3 Engenharia © 2025</strong><br>
-    <small>🔒Sistema protegido com medidas de segurança avançadas</small>
+<div style="text-align: center; color: var(--text-secondary); padding: 2rem;">
+    <strong>🏆 C3 FREIGHTS - Sistema de Leilão de Fretes</strong><br>
+    <small>🔒 Sistema seguro com criptografia de ponta a ponta | v2.0</small>
 </div>
 """, unsafe_allow_html=True)
-    
-
-
-
-
-
-
-
-
-
-
