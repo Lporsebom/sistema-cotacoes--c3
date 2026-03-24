@@ -561,10 +561,20 @@ def verificar_login(razao_social, senha, ip):
             registrar_tentativa_falha(ip)
             return None, "Razão Social ou senha incorretos"
         
-        if usuario.bloqueado_ate and usuario.bloqueado_ate > datetime.now():
-            return None, f"Usuário bloqueado até {usuario.bloqueado_ate.strftime('%H:%M')}"
+        # Capturar os dados do usuário ANTES de qualquer operação que possa fechar a sessão
+        usuario_id = usuario.id
+        usuario_razao_social = usuario.razao_social
+        usuario_tipo = usuario.tipo
+        usuario_status = usuario.status
+        usuario_bloqueado_ate = usuario.bloqueado_ate
+        usuario_senha_hash = usuario.senha_hash
+        usuario_tentativas_login = usuario.tentativas_login
         
-        if not verificar_senha(senha, usuario.senha_hash):
+        if usuario_bloqueado_ate and usuario_bloqueado_ate > datetime.now():
+            return None, f"Usuário bloqueado até {usuario_bloqueado_ate.strftime('%H:%M')}"
+        
+        if not verificar_senha(senha, usuario_senha_hash):
+            # Atualizar tentativas de login
             usuario.tentativas_login += 1
             if usuario.tentativas_login >= MAX_TENTATIVAS_LOGIN:
                 usuario.bloqueado_ate = datetime.now() + timedelta(minutes=BLOQUEIO_MINUTOS)
@@ -572,22 +582,35 @@ def verificar_login(razao_social, senha, ip):
             registrar_tentativa_falha(ip)
             return None, "Razão Social ou senha incorretos"
         
+        # Login bem sucedido - resetar tentativas
         usuario.tentativas_login = 0
         usuario.ultimo_login = datetime.now()
         session.commit()
         resetar_tentativas(ip)
         
-        adicionar_log_seguranca(usuario.id, 'LOGIN_SUCESSO', 'Login realizado com sucesso', ip)
+        # Fechar a sessão antes de adicionar o log (para evitar detached instance)
+        session.close()
+        
+        # Adicionar log de segurança (usando nova sessão)
+        adicionar_log_seguranca(usuario_id, 'LOGIN_SUCESSO', 'Login realizado com sucesso', ip)
         
         return {
-            'id': usuario.id,
-            'razao_social': usuario.razao_social,
-            'tipo': usuario.tipo,
-            'status': usuario.status
+            'id': usuario_id,
+            'razao_social': usuario_razao_social,
+            'tipo': usuario_tipo,
+            'status': usuario_status
         }, None
         
+    except Exception as e:
+        print(f"Erro no login: {e}")
+        session.rollback()
+        return None, "Erro interno no sistema"
     finally:
-        session.close()
+        # Garantir que a sessão seja fechada apenas se ainda estiver aberta
+        try:
+            session.close()
+        except:
+            pass
 
 def cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, tipo='transportadora', ip=None):
     if razao_social.lower() == "c3 engenharia":
@@ -633,18 +656,26 @@ def cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, tipo='
         session.add(novo_usuario)
         session.commit()
         
-        adicionar_log_seguranca(usuario_id, 'CADASTRO', f'Novo usuário: {razao_social}', ip)
-        return True, "Cadastro realizado com sucesso!"
-        
-    except IntegrityError:
+def adicionar_log_seguranca(usuario_id, acao, descricao, ip=None, user_agent=None):
+    session = get_session()
+    try:
+        log = LogSeguranca(
+            usuario_id=usuario_id,
+            acao=acao,
+            descricao=descricao,
+            ip=ip or 'N/A',
+            user_agent=user_agent or 'N/A',
+            created_at=datetime.now()
+        )
+        session.add(log)
+        session.commit()
+        return True
+    except Exception as e:
         session.rollback()
-        return False, "Dados já cadastrados"
+        print(f"Erro ao adicionar log: {e}")
+        return False
     finally:
         session.close()
-
-# =============================================
-# FUNÇÕES DE DATA
-# =============================================
 
 def data_ptbr(data_str):
     try:
