@@ -127,7 +127,11 @@ class TentativaLogin(Base):
 # =============================================
 # CONFIGURAÇÃO DO BANCO
 # =============================================
-engine = create_engine('sqlite:///c3_engenharia.db', connect_args={'check_same_thread': False})
+# Usando caminho absoluto para evitar problemas no Streamlit Cloud
+db_path = os.path.join(os.path.dirname(__file__), 'c3_engenharia.db')
+engine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})
+
+# Criar todas as tabelas
 Base.metadata.create_all(engine)
 Session = scoped_session(sessionmaker(bind=engine))
 
@@ -146,13 +150,16 @@ def get_usuarios():
             'id': u.id,
             'razao_social': u.razao_social,
             'cnpj_ultimos4': u.cnpj_ultimos4,
-            'email': '****@****',  # Não expor email completo
+            'email': '****@****',
             'telefone': u.telefone,
             'cidade': u.cidade,
             'tipo': u.tipo,
             'status': u.status,
             'data_cadastro': u.data_cadastro.strftime('%d-%m-%Y %H:%M:%S') if u.data_cadastro else None
         } for u in usuarios]
+    except Exception as e:
+        print(f"Erro em get_usuarios: {e}")
+        return []
     finally:
         session.close()
 
@@ -468,7 +475,6 @@ def validar_senha_forte(senha):
 def get_estatisticas_solicitante(usuario_id):
     solicitacoes = get_solicitacoes_por_usuario(usuario_id)
     usuarios = get_usuarios()
-    cotacoes = get_cotacoes()
     
     solicitacoes_ativas = sum(1 for s in solicitacoes if s.get('status') == 'Aberta' and not s.get('leilao_encerrado'))
     total_transportadoras = sum(1 for u in usuarios if u.get('tipo') == 'transportadora' and u.get('status') == 'Ativa')
@@ -587,8 +593,9 @@ def cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, tipo='
     if razao_social.lower() == "c3 engenharia":
         return False, "Esta razão social é reservada"
     
-    if not validar_senha_forte(senha)[0]:
-        return False, "Senha não atende aos requisitos mínimos"
+    valida, msg = validar_senha_forte(senha)
+    if not valida:
+        return False, msg
     
     if not validar_cnpj(cnpj):
         return False, "CNPJ inválido"
@@ -698,14 +705,17 @@ def tempo_desde(data_str):
 # =============================================
 
 def inicializar_sistema():
+    """Inicializa o sistema criando o admin se não existir"""
     session = get_session()
     try:
+        # Verificar se o admin já existe
         admin = session.query(Usuario).filter(
             func.lower(Usuario.razao_social) == "c3 engenharia"
         ).first()
         
         if not admin:
-            senha_admin = secrets.token_urlsafe(12)
+            # Criar admin com senha padrão (será alterada no primeiro acesso)
+            senha_admin = "Admin@123456"
             cnpj_limpo = "12345678000190"
             
             admin_id = "ADMIN-001"
@@ -726,18 +736,25 @@ def inicializar_sistema():
             session.add(admin)
             session.commit()
             
-            with open('admin_credentials.txt', 'w') as f:
-                f.write("="*50 + "\n")
-                f.write("CREDENCIAIS DE ACESSO ADMIN\n")
-                f.write("="*50 + "\n\n")
-                f.write(f"Usuário: C3 Engenharia\n")
-                f.write(f"Senha: {senha_admin}\n\n")
-                f.write("IMPORTANTE: Altere a senha no primeiro acesso!\n")
-                f.write("="*50 + "\n")
+            # Salvar credenciais em arquivo (apenas para debug local)
+            try:
+                with open('admin_credentials.txt', 'w') as f:
+                    f.write("="*50 + "\n")
+                    f.write("CREDENCIAIS DE ACESSO ADMIN\n")
+                    f.write("="*50 + "\n\n")
+                    f.write("Usuário: C3 Engenharia\n")
+                    f.write(f"Senha: {senha_admin}\n\n")
+                    f.write("IMPORTANTE: Altere a senha no primeiro acesso!\n")
+                    f.write("="*50 + "\n")
+            except:
+                pass
             
-            print(f"✅ Admin criado. Credenciais salvas em admin_credentials.txt")
+            return True, f"Admin criado com senha: {senha_admin}"
+        else:
+            return True, "Admin já existe"
+            
     except Exception as e:
-        print(f"⚠️ Erro na inicialização: {e}")
+        return False, f"Erro na inicialização: {e}"
     finally:
         session.close()
 
@@ -745,13 +762,13 @@ def inicializar_sistema():
 # CONFIGURAÇÃO DO STREAMLIT
 # =============================================
 st.set_page_config(
-    page_title="C3 Freights - Sistema de Leilão de Fretes",
+    page_title="C3 Leilão de Fretes",
     page_icon="🏆",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# CSS COMPLETO (mantido do código anterior)
+# CSS COMPLETO
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
@@ -896,7 +913,11 @@ def show_toast(message, type='success'):
 # =============================================
 # INICIALIZAÇÃO
 # =============================================
-inicializar_sistema()
+with st.spinner("Inicializando sistema..."):
+    sucesso, msg = inicializar_sistema()
+    if not sucesso:
+        st.error(f"Erro na inicialização: {msg}")
+        st.stop()
 
 # =============================================
 # SISTEMA DE LOGIN
@@ -910,8 +931,8 @@ if not st.session_state.logged_in:
     with col2:
         st.markdown("""
         <div class="main-header" style="text-align: center;">
-            <h1>🏆 C3 FREIGHTS</h1>
-            <p>Sistema de Leilão de Fretes</p>
+            <h1>🏆 C3 LEILÃO DE FRETES</h1>
+            <p>Plataforma de Leilão de Fretes para Transportadoras</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -987,8 +1008,8 @@ col1, col2, col3 = st.columns([2, 1, 1])
 with col1:
     st.markdown(f"""
     <div class="main-header">
-        <h1>🏆 C3 FREIGHTS</h1>
-        <p>Sistema de Leilão de Fretes - {st.session_state.razao_social}</p>
+        <h1>🏆 C3 LEILÃO DE FRETES</h1>
+        <p>Plataforma de Leilão de Fretes - {st.session_state.razao_social}</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1762,7 +1783,7 @@ elif menu == "⚙️ Meu Perfil":
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: var(--text-secondary); padding: 2rem;">
-    <strong>🏆 C3 FREIGHTS - Sistema de Leilão de Fretes</strong><br>
+    <strong> C3 LEILÃO DE FRETES - Sistema de Leilão de Fretes</strong><br>
     <small>🔒 Sistema seguro com criptografia de ponta a ponta | v2.0</small>
 </div>
 """, unsafe_allow_html=True)
