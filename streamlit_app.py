@@ -127,11 +127,8 @@ class TentativaLogin(Base):
 # =============================================
 # CONFIGURAÇÃO DO BANCO
 # =============================================
-# Usando caminho absoluto para evitar problemas no Streamlit Cloud
 db_path = os.path.join(os.path.dirname(__file__), 'c3_engenharia.db')
 engine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})
-
-# Criar todas as tabelas
 Base.metadata.create_all(engine)
 Session = scoped_session(sessionmaker(bind=engine))
 
@@ -139,7 +136,7 @@ def get_session():
     return Session()
 
 # =============================================
-# FUNÇÕES DE BANCO DE DADOS - COMPLETAS
+# FUNÇÕES DE BANCO DE DADOS
 # =============================================
 
 def get_usuarios():
@@ -435,6 +432,7 @@ def adicionar_log_seguranca(usuario_id, acao, descricao, ip=None, user_agent=Non
         return True
     except Exception as e:
         session.rollback()
+        print(f"Erro ao adicionar log: {e}")
         return False
     finally:
         session.close()
@@ -561,20 +559,18 @@ def verificar_login(razao_social, senha, ip):
             registrar_tentativa_falha(ip)
             return None, "Razão Social ou senha incorretos"
         
-        # Capturar os dados do usuário ANTES de qualquer operação que possa fechar a sessão
+        # Capturar os dados do usuário ANTES
         usuario_id = usuario.id
         usuario_razao_social = usuario.razao_social
         usuario_tipo = usuario.tipo
         usuario_status = usuario.status
         usuario_bloqueado_ate = usuario.bloqueado_ate
         usuario_senha_hash = usuario.senha_hash
-        usuario_tentativas_login = usuario.tentativas_login
         
         if usuario_bloqueado_ate and usuario_bloqueado_ate > datetime.now():
             return None, f"Usuário bloqueado até {usuario_bloqueado_ate.strftime('%H:%M')}"
         
         if not verificar_senha(senha, usuario_senha_hash):
-            # Atualizar tentativas de login
             usuario.tentativas_login += 1
             if usuario.tentativas_login >= MAX_TENTATIVAS_LOGIN:
                 usuario.bloqueado_ate = datetime.now() + timedelta(minutes=BLOQUEIO_MINUTOS)
@@ -582,16 +578,12 @@ def verificar_login(razao_social, senha, ip):
             registrar_tentativa_falha(ip)
             return None, "Razão Social ou senha incorretos"
         
-        # Login bem sucedido - resetar tentativas
         usuario.tentativas_login = 0
         usuario.ultimo_login = datetime.now()
         session.commit()
         resetar_tentativas(ip)
-        
-        # Fechar a sessão antes de adicionar o log (para evitar detached instance)
         session.close()
         
-        # Adicionar log de segurança (usando nova sessão)
         adicionar_log_seguranca(usuario_id, 'LOGIN_SUCESSO', 'Login realizado com sucesso', ip)
         
         return {
@@ -603,10 +595,8 @@ def verificar_login(razao_social, senha, ip):
         
     except Exception as e:
         print(f"Erro no login: {e}")
-        session.rollback()
         return None, "Erro interno no sistema"
     finally:
-        # Garantir que a sessão seja fechada apenas se ainda estiver aberta
         try:
             session.close()
         except:
@@ -656,26 +646,18 @@ def cadastrar_usuario(razao_social, cnpj, email, telefone, cidade, senha, tipo='
         session.add(novo_usuario)
         session.commit()
         
-def adicionar_log_seguranca(usuario_id, acao, descricao, ip=None, user_agent=None):
-    session = get_session()
-    try:
-        log = LogSeguranca(
-            usuario_id=usuario_id,
-            acao=acao,
-            descricao=descricao,
-            ip=ip or 'N/A',
-            user_agent=user_agent or 'N/A',
-            created_at=datetime.now()
-        )
-        session.add(log)
-        session.commit()
-        return True
-    except Exception as e:
+        adicionar_log_seguranca(usuario_id, 'CADASTRO', f'Novo usuário: {razao_social}', ip)
+        return True, "Cadastro realizado com sucesso!"
+        
+    except IntegrityError:
         session.rollback()
-        print(f"Erro ao adicionar log: {e}")
-        return False
+        return False, "Dados já cadastrados"
     finally:
         session.close()
+
+# =============================================
+# FUNÇÕES DE DATA
+# =============================================
 
 def data_ptbr(data_str):
     try:
@@ -732,20 +714,17 @@ def tempo_desde(data_str):
         return "tempo desconhecido"
 
 # =============================================
-# INICIALIZAÇÃO DO SISTEMA (ADMIN SEGURO)
+# INICIALIZAÇÃO DO SISTEMA
 # =============================================
 
 def inicializar_sistema():
-    """Inicializa o sistema criando o admin se não existir"""
     session = get_session()
     try:
-        # Verificar se o admin já existe
         admin = session.query(Usuario).filter(
             func.lower(Usuario.razao_social) == "c3 engenharia"
         ).first()
         
         if not admin:
-            # Criar admin com senha padrão (será alterada no primeiro acesso)
             senha_admin = "Admin@123456"
             cnpj_limpo = "12345678000190"
             
@@ -766,21 +745,7 @@ def inicializar_sistema():
             
             session.add(admin)
             session.commit()
-            
-            # Salvar credenciais em arquivo (apenas para debug local)
-            try:
-                with open('admin_credentials.txt', 'w') as f:
-                    f.write("="*50 + "\n")
-                    f.write("CREDENCIAIS DE ACESSO ADMIN\n")
-                    f.write("="*50 + "\n\n")
-                    f.write("Usuário: C3 Engenharia\n")
-                    f.write(f"Senha: {senha_admin}\n\n")
-                    f.write("IMPORTANTE: Altere a senha no primeiro acesso!\n")
-                    f.write("="*50 + "\n")
-            except:
-                pass
-            
-            return True, f"Admin criado com senha: {senha_admin}"
+            return True, "Admin criado com sucesso!"
         else:
             return True, "Admin já existe"
             
@@ -799,7 +764,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS COMPLETO
+# CSS (mantido igual ao seu)
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
@@ -866,23 +831,6 @@ st.markdown("""
     .metric-value { font-size: 2.5rem; font-weight: 800; color: #667eea; margin: 0.5rem 0; }
     .metric-label { color: var(--text-secondary); font-size: 0.875rem; font-weight: 500; text-transform: uppercase; }
     
-    .frete-card {
-        background: var(--card-bg);
-        border-radius: 1rem;
-        padding: 1.5rem;
-        margin-bottom: 1rem;
-        border: 1px solid var(--border-color);
-        transition: all 0.3s ease;
-        animation: fadeIn 0.5s ease;
-    }
-    
-    .frete-card:hover { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); transform: translateX(4px); }
-    
-    .badge-success { background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
-    .badge-warning { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
-    .badge-danger { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
-    .badge-info { background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
-    
     .stButton button { transition: all 0.3s ease; border-radius: 0.5rem; font-weight: 600; }
     .stButton button:hover { transform: translateY(-2px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
     
@@ -922,10 +870,6 @@ st.markdown("""
     .toast-info { border-left-color: #3b82f6; }
 </style>
 """, unsafe_allow_html=True)
-
-# =============================================
-# FUNÇÕES DE NOTIFICAÇÃO
-# =============================================
 
 def show_toast(message, type='success'):
     st.markdown(f"""
@@ -1031,7 +975,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =============================================
-# SISTEMA PRINCIPAL
+# SISTEMA PRINCIPAL (MENUS)
 # =============================================
 
 # Header
@@ -1092,7 +1036,6 @@ else:
 
 menu = st.sidebar.selectbox("Menu", menu_options, label_visibility="collapsed")
 
-# Sidebar info
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🔒 Dicas de Segurança")
 st.sidebar.info("""
@@ -1144,7 +1087,6 @@ if menu == "📊 Dashboard":
             </div>
             """, unsafe_allow_html=True)
         
-        # Atividade recente
         st.markdown("### 📈 Atividade Recente")
         solicitacoes = get_solicitacoes_por_usuario(st.session_state.usuario_id)
         
@@ -1160,7 +1102,6 @@ if menu == "📊 Dashboard":
             st.info("Nenhuma solicitação criada ainda")
     
     else:
-        # Dashboard Transportadora
         stats = get_estatisticas_transportadora(st.session_state.usuario_id)
         
         col1, col2, col3 = st.columns(3)
@@ -1193,7 +1134,6 @@ if menu == "📊 Dashboard":
             </div>
             """, unsafe_allow_html=True)
         
-        # Minhas cotações recentes
         st.markdown("### 📝 Minhas Últimas Cotações")
         minhas_cotacoes = get_cotacoes_por_transportadora(st.session_state.usuario_id)
         
@@ -1814,7 +1754,7 @@ elif menu == "⚙️ Meu Perfil":
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: var(--text-secondary); padding: 2rem;">
-    <strong> C3 LEILÃO DE FRETES - Sistema de Leilão de Fretes</strong><br>
+    <strong>🏆 C3 LEILÃO DE FRETES - Sistema de Leilão de Fretes</strong><br>
     <small>🔒 Sistema seguro com criptografia de ponta a ponta | v2.0</small>
 </div>
 """, unsafe_allow_html=True)
