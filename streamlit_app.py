@@ -717,14 +717,24 @@ def tempo_desde(data_str):
 # INICIALIZAÇÃO DO SISTEMA
 # =============================================
 
+# =============================================
+# INICIALIZAÇÃO DO SISTEMA (COM LOGS)
+# =============================================
+
 def inicializar_sistema():
+    """Inicializa o sistema criando o admin se não existir"""
+    print("🔧 Iniciando inicialização do sistema...")
     session = get_session()
     try:
+        # Verificar se o admin já existe
         admin = session.query(Usuario).filter(
             func.lower(Usuario.razao_social) == "c3 engenharia"
         ).first()
         
+        print(f"📊 Admin encontrado: {admin is not None}")
+        
         if not admin:
+            print("👤 Criando admin padrão...")
             senha_admin = "Admin@123456"
             cnpj_limpo = "12345678000190"
             
@@ -745,12 +755,36 @@ def inicializar_sistema():
             
             session.add(admin)
             session.commit()
-            return True, "Admin criado com sucesso!"
+            print(f"✅ Admin criado com sucesso! Senha: {senha_admin}")
+            return True, f"Admin criado com sucesso! Use: C3 Engenharia / {senha_admin}"
         else:
+            print("✅ Admin já existe no sistema")
             return True, "Admin já existe"
             
     except Exception as e:
+        print(f"❌ Erro na inicialização: {e}")
+        import traceback
+        traceback.print_exc()
         return False, f"Erro na inicialização: {e}"
+    finally:
+        session.close()
+
+# =============================================
+# FUNÇÃO PARA VERIFICAR USUÁRIOS (DEBUG)
+# =============================================
+
+def verificar_usuarios():
+    """Função de debug para listar usuários"""
+    session = get_session()
+    try:
+        usuarios = session.query(Usuario).all()
+        print(f"\n📊 TOTAL DE USUÁRIOS NO BANCO: {len(usuarios)}")
+        for u in usuarios:
+            print(f"   - ID: {u.id} | Razão: {u.razao_social} | Tipo: {u.tipo} | Status: {u.status}")
+        return usuarios
+    except Exception as e:
+        print(f"Erro ao listar usuários: {e}")
+        return []
     finally:
         session.close()
 
@@ -764,7 +798,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS (mantido igual ao seu)
+# CSS COMPLETO
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
@@ -886,13 +920,51 @@ def show_toast(message, type='success'):
     """, unsafe_allow_html=True)
 
 # =============================================
-# INICIALIZAÇÃO
+# INICIALIZAÇÃO COM DEBUG
 # =============================================
+print("="*50)
+print("🚀 INICIANDO APLICAÇÃO C3 LEILÃO DE FRETES")
+print("="*50)
+
+# Inicializar sistema
 with st.spinner("Inicializando sistema..."):
     sucesso, msg = inicializar_sistema()
     if not sucesso:
-        st.error(f"Erro na inicialização: {msg}")
+        st.error(f"❌ {msg}")
         st.stop()
+    else:
+        st.success(f"✅ {msg}")
+
+# Verificar usuários no banco (debug)
+usuarios_db = verificar_usuarios()
+
+# Se não houver usuários, criar um de teste
+if not usuarios_db:
+    st.warning("⚠️ Nenhum usuário encontrado no banco! Criando usuário de teste...")
+    with st.spinner("Criando usuário de teste..."):
+        session = get_session()
+        try:
+            usuario_id = f"TEST-{secrets.token_hex(4).upper()}"
+            teste = Usuario(
+                id=usuario_id,
+                razao_social="Transportadora Teste",
+                cnpj_hash=criptografar_dado("12345678000190"),
+                cnpj_ultimos4="0190",
+                email_hash=criptografar_dado("teste@teste.com"),
+                telefone="(11) 99999-9999",
+                cidade="São Paulo - SP",
+                senha_hash=hash_senha("Teste@123456"),
+                tipo="transportadora",
+                status="Ativa",
+                data_cadastro=datetime.now()
+            )
+            session.add(teste)
+            session.commit()
+            st.success("✅ Usuário de teste criado! Use: Transportadora Teste / Teste@123456")
+        except Exception as e:
+            st.error(f"Erro ao criar usuário teste: {e}")
+        finally:
+            session.close()
 
 # =============================================
 # SISTEMA DE LOGIN
@@ -911,6 +983,16 @@ if not st.session_state.logged_in:
         </div>
         """, unsafe_allow_html=True)
         
+        # Exibir credenciais disponíveis (apenas para debug)
+        with st.expander("ℹ️ Credenciais disponíveis (DEBUG)"):
+            st.info("""
+            **Credenciais padrão:**
+            - **Admin:** C3 Engenharia / Admin@123456
+            - **Teste:** Transportadora Teste / Teste@123456
+            
+            *Crie sua própria conta no cadastro abaixo*
+            """)
+        
         tab1, tab2 = st.tabs(["🔐 Login", "📝 Cadastro"])
         
         with tab1:
@@ -927,9 +1009,11 @@ if not st.session_state.logged_in:
                         ip = st.session_state.get('ip', '127.0.0.1')
                         
                         with st.spinner("Verificando credenciais..."):
+                            print(f"🔐 Tentativa de login: {razao_social}")
                             usuario, erro = verificar_login(razao_social, senha, ip)
                             
                             if usuario:
+                                print(f"✅ Login bem sucedido: {usuario['razao_social']}")
                                 st.session_state.logged_in = True
                                 st.session_state.usuario_id = usuario['id']
                                 st.session_state.razao_social = usuario['razao_social']
@@ -939,6 +1023,7 @@ if not st.session_state.logged_in:
                                 time.sleep(1)
                                 st.rerun()
                             else:
+                                print(f"❌ Login falhou: {erro}")
                                 show_toast(erro or "Credenciais inválidas", "error")
         
         with tab2:
@@ -977,6 +1062,7 @@ if not st.session_state.logged_in:
 # =============================================
 # SISTEMA PRINCIPAL (MENUS)
 # =============================================
+print(f"✅ Usuário logado: {st.session_state.razao_social} ({st.session_state.tipo_usuario})")
 
 # Header
 col1, col2, col3 = st.columns([2, 1, 1])
@@ -1149,7 +1235,7 @@ if menu == "📊 Dashboard":
             st.info("Você ainda não enviou nenhuma cotação")
 
 # =============================================
-# NOVA SOLICITAÇÃO
+# NOVA SOLICITAÇÃO (mantido igual)
 # =============================================
 elif menu == "➕ Nova Solicitação" and st.session_state.tipo_usuario == 'solicitante':
     st.markdown("### ➕ Nova Solicitação de Frete")
